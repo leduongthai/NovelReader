@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "718646547046",
+    "project_id": "novelreader-886a4",
+    "storage_bucket": "novelreader-886a4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:718646547046:android:5d0a6ff8b5b8ceb0f1d3a7",
+        "android_client_info": {
+          "package_name": "com.example.novelreader"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDGYinNOYtd1SIVv01QG4Qc6lLCidQQSE0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
