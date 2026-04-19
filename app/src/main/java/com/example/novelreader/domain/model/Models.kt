@@ -38,7 +38,8 @@ data class Chapter(
     val translatedContent: String = "",  // AI-translated version
     val chapterIndex: Int = 0,
     val sourceUrl: String = "",           // URL to fetch content if empty
-    val isLoaded: Boolean = false
+    val isLoaded: Boolean = false,
+    val isBookmarked: Boolean = false
 ) : Parcelable
 
 /**
@@ -76,6 +77,7 @@ data class User(
     val email: String = "",
     val avatarUrl: String = "",
     val isPremium: Boolean = false,
+    val role: String = "user",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -121,6 +123,17 @@ data class ReaderSettings(
     val ttsSpeed: Float = 1.0f
 )
 
+data class Review(
+    val id: String = "",
+    val bookId: String = "",
+    val sourceUrl: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val rating: Int = 0,
+    val comment: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 enum class ReaderBackground(val bg: Long, val text: Long) {
     WHITE(0xFFFFFFFF, 0xFF1A1A1A),
     PAPER(0xFFF5EED6, 0xFF2C2010),   // Sepia / cream — default
@@ -128,6 +141,15 @@ enum class ReaderBackground(val bg: Long, val text: Long) {
     DARK(0xFF1A1A2E, 0xFFE0E0E0),
     BLACK(0xFF000000, 0xFFCCCCCC)
 }
+
+data class ChatGroup(
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    val adminId: String = "",
+    val members: List<String> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
+)
 
 // Default translation prompt (Vietnamese)
 const val DEFAULT_TRANSLATION_PROMPT = """Bạn là một dịch giả chuyên nghiệp chuyên dịch truyện từ tiếng Trung/Anh/Nhật sang tiếng Việt.

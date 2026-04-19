@@ -27,7 +27,7 @@ import javax.inject.Singleton
 class CommunityRepository @Inject constructor(
     private val database: FirebaseDatabase,
     private val storage: FirebaseStorage,
-    private val auth: FirebaseAuth
+    val auth: FirebaseAuth
 ) {
 
     companion object {
@@ -161,12 +161,20 @@ class CommunityRepository @Inject constructor(
     suspend fun likePrompt(promptId: String): Result<Unit> = runCatching {
         auth.currentUser ?: throw Exception("Bạn cần đăng nhập để thích prompt")
         val ref = database.reference.child(PROMPTS_NODE).child(promptId).child("likes")
-
-        // Atomic increment using Firebase transaction
-        ref.get().await().let { snap ->
-            val current = snap.getValue(Int::class.java) ?: 0
-            ref.setValue(current + 1).await()
-        }
+        ref.runTransaction(object : com.google.firebase.database.Transaction.Handler {
+            override fun doTransaction(
+                data: com.google.firebase.database.MutableData
+            ): com.google.firebase.database.Transaction.Result {
+                val current = data.getValue(Int::class.java) ?: 0
+                data.value = current + 1
+                return com.google.firebase.database.Transaction.success(data)
+            }
+            override fun onComplete(
+                error: com.google.firebase.database.DatabaseError?,
+                committed: Boolean,
+                snapshot: com.google.firebase.database.DataSnapshot?
+            ) {}
+        })
     }
 
     // ---- Shared Novels ----
@@ -265,7 +273,8 @@ class CommunityRepository @Inject constructor(
             id = child("id").getValue(String::class.java) ?: key ?: "",
             name = child("name").getValue(String::class.java) ?: "",
             email = child("email").getValue(String::class.java) ?: "",
-            avatarUrl = child("avatarUrl").getValue(String::class.java) ?: ""
+            avatarUrl = child("avatarUrl").getValue(String::class.java) ?: "",
+            role = child("role").getValue(String::class.java) ?: "user"
         )
     }.getOrNull()
 
@@ -287,6 +296,7 @@ class CommunityRepository @Inject constructor(
 
     private fun User.toFirebaseMap() = mapOf(
         "id" to id, "name" to name, "email" to email,
-        "avatarUrl" to avatarUrl, "isPremium" to isPremium
+        "avatarUrl" to avatarUrl, "isPremium" to isPremium,
+        "role" to role
     )
 }

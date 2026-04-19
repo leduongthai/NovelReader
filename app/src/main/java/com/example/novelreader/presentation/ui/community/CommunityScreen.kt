@@ -26,6 +26,13 @@ import com.example.novelreader.domain.model.SharedNovel
 import com.example.novelreader.presentation.viewmodel.CommunityViewModel
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
+import com.example.novelreader.presentation.viewmodel.CommunityActionState
 
 // ============================================================
 // COMMUNITY SCREEN — Chat / Chia sẻ truyện / Diễn đàn Prompt
@@ -33,11 +40,30 @@ import java.util.*
 // ============================================================
 
 @Composable
-fun CommunityScreen(viewModel: CommunityViewModel = hiltViewModel()) {
+fun CommunityScreen(
+    onOpenGroupList: () -> Unit,
+    viewModel: CommunityViewModel = hiltViewModel()) {
     val tabs = listOf("Chat", "Chia sẻ truyện", "Thảo luận", "Góp ý & báo lỗi")
     var selectedTab by remember { mutableStateOf(0) }
+    val actionState by viewModel.actionState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Hiện snackbar khi có kết quả
+    LaunchedEffect(actionState) {                                   // <-- thêm block này
+        when (actionState) {
+            is CommunityActionState.Success ->
+                snackbarHostState.showSnackbar((actionState as CommunityActionState.Success).message)
+            is CommunityActionState.Error ->
+                snackbarHostState.showSnackbar((actionState as CommunityActionState.Error).message)
+            else -> {}
+        }
+        if (actionState !is CommunityActionState.Idle) {
+            viewModel.clearActionState()
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             ScrollableTabRow(
                 selectedTabIndex = selectedTab,
@@ -55,7 +81,7 @@ fun CommunityScreen(viewModel: CommunityViewModel = hiltViewModel()) {
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (selectedTab) {
-                0 -> ChatTab(viewModel)
+                0 -> GroupListButton(onOpenGroupList = onOpenGroupList)
                 1 -> SharedNovelsTab(viewModel)
                 2 -> PromptForumTab(viewModel)
                 3 -> FeedbackTab()
@@ -229,6 +255,21 @@ fun ChatBubble(message: ChatMessage, isOwn: Boolean) {
 @Composable
 fun SharedNovelsTab(viewModel: CommunityViewModel) {
     val novels by viewModel.sharedNovels.collectAsState()
+    val context = LocalContext.current
+    var showTitleDialog by remember { mutableStateOf(false) }
+    var selectedBytes by remember { mutableStateOf<ByteArray?>(null) }
+
+    val fileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            val bytes = context.contentResolver.openInputStream(it)?.readBytes()
+            if (bytes != null) {
+                selectedBytes = bytes
+                showTitleDialog = true
+            }
+        }
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -242,7 +283,9 @@ fun SharedNovelsTab(viewModel: CommunityViewModel) {
             ) {
                 Text("Kho truyện chia sẻ", fontWeight = FontWeight.Bold)
                 if (viewModel.isLoggedIn) {
-                    FilledTonalButton(onClick = { /* File picker to upload */ }) {
+                    FilledTonalButton(onClick = {
+                        fileLauncher.launch(arrayOf("text/plain"))
+                    }) {
                         Icon(Icons.Default.Upload, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Tải lên")
@@ -252,8 +295,44 @@ fun SharedNovelsTab(viewModel: CommunityViewModel) {
         }
 
         items(novels, key = { it.id }) { novel ->
-            SharedNovelCard(novel = novel, onDownload = { /* Download */ })
+            SharedNovelCard(
+                novel = novel,
+                onDownload = { viewModel.downloadAndImport(novel) }
+            )
         }
+    }
+
+    // Dialog nhập tên truyện trước khi upload
+    if (showTitleDialog) {
+        var title by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showTitleDialog = false },
+            title = { Text("Đặt tên truyện") },
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Tên truyện") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectedBytes?.let { bytes ->
+                            viewModel.shareNovel(
+                                title.ifBlank { "Truyện không tên" },
+                                bytes
+                            )
+                        }
+                        showTitleDialog = false
+                    }
+                ) { Text("Tải lên") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTitleDialog = false }) { Text("Hủy") }
+            }
+        )
     }
 }
 
@@ -406,5 +485,16 @@ fun PostPromptDialog(onPost: (String, String) -> Unit, onDismiss: () -> Unit) {
 fun FeedbackTab() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text("Góp ý & Báo lỗi\n(Liên kết đến form phản hồi)", textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@Composable
+fun GroupListButton(onOpenGroupList: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Button(onClick = onOpenGroupList) {
+            Icon(Icons.Default.Forum, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Vào khu vực nhóm chat")
+        }
     }
 }

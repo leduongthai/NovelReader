@@ -37,7 +37,8 @@ data class ChapterEntity(
     val translatedContent: String = "",
     val chapterIndex: Int,
     val sourceUrl: String = "",
-    val isLoaded: Boolean = false
+    val isLoaded: Boolean = false,
+    val isBookmarked: Boolean = false
 )
 
 @Entity(
@@ -77,5 +78,6 @@ data class UserEntity(
     val email: String,
     val avatarUrl: String,
     val isPremium: Boolean,
+    val role: String = "user",
     val createdAt: Long
 )

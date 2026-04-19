@@ -62,6 +62,13 @@ interface ChapterDao {
 
     @Query("DELETE FROM chapters WHERE bookId = :bookId")
     suspend fun deleteChaptersByBook(bookId: String)
+
+    @Query("UPDATE chapters SET isBookmarked = :bookmarked WHERE id = :chapterId")
+    suspend fun updateBookmark(chapterId: String, bookmarked: Boolean)
+
+    @Query("SELECT * FROM chapters WHERE bookId = :bookId AND isBookmarked = 1")
+    fun getBookmarkedChapters(bookId: String): Flow<List<ChapterEntity>>
+
 }
 
 @Dao

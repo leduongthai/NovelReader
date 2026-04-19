@@ -68,7 +68,8 @@ fun ProfileScreen(viewModel: ProfileViewModel = hiltViewModel()) {
                 AuthSection(
                     authState = authState,
                     onSignIn = viewModel::signIn,
-                    onSignUp = viewModel::signUp
+                    onSignUp = viewModel::signUp,
+                    onResetPassword = viewModel::resetPassword
                 )
             }
 
@@ -87,13 +88,15 @@ fun ProfileScreen(viewModel: ProfileViewModel = hiltViewModel()) {
 fun AuthSection(
     authState: AuthState,
     onSignIn: (String, String) -> Unit,
-    onSignUp: (String, String, String) -> Unit
+    onSignUp: (String, String, String) -> Unit,
+    onResetPassword: (String) -> Unit
 ) {
     var isSignUp by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
+    var showResetDialog by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
@@ -174,17 +177,65 @@ fun AuthSection(
                 }
             }
 
-            // Toggle sign-up / sign-in
-            TextButton(
-                onClick = { isSignUp = !isSignUp; name = ""; email = ""; password = "" },
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            ) {
-                Text(
-                    if (isSignUp) "Đã có tài khoản? Đăng nhập"
-                    else "Chưa có tài khoản? Đăng ký"
-                )
+            if (!isSignUp) {
+                // Hiển thị thông báo khi gửi email thành công
+                if (authState is AuthState.PasswordResetSent) {
+                    Text(
+                        "✓ Đã gửi email đặt lại mật khẩu. Kiểm tra hộp thư của bạn.",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
+
+                TextButton(
+                    onClick = { showResetDialog = true },
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Text("Quên mật khẩu?", fontSize = 13.sp)
+                }
+
+
+                // Toggle sign-up / sign-in
+                TextButton(
+                    onClick = { isSignUp = !isSignUp; name = ""; email = ""; password = "" },
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Text(
+                        if (isSignUp) "Đã có tài khoản? Đăng nhập"
+                        else "Chưa có tài khoản? Đăng ký"
+                    )
+                }
             }
         }
+    }
+    if (showResetDialog) {
+        var resetEmail by remember { mutableStateOf(email) }
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false },
+            title = { Text("Đặt lại mật khẩu") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Nhập email của bạn để nhận liên kết đặt lại mật khẩu.", fontSize = 14.sp)
+                    OutlinedTextField(
+                        value = resetEmail,
+                        onValueChange = { resetEmail = it },
+                        label = { Text("Email") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onResetPassword(resetEmail)
+                    showResetDialog = false
+                }) { Text("Gửi") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false }) { Text("Hủy") }
+            }
+        )
     }
 }
 

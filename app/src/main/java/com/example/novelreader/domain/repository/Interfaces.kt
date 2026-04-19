@@ -21,4 +21,5 @@ interface ChapterRepository {
     suspend fun getChapterByIndex(bookId: String, index: Int): Chapter?
     suspend fun ensureContentLoaded(chapter: Chapter, config: CrawlerConfig?): Result<Chapter>
     suspend fun translateChapter(chapter: Chapter, prompt: String, apiKey: String): Result<String>
+    suspend fun toggleBookmark(chapterId: String, bookmarked: Boolean)
 }

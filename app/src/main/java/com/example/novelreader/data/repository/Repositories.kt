@@ -138,6 +138,10 @@ class ChapterRepositoryImpl @Inject constructor(
                 chapterDao.updateTranslation(chapter.id, translation)
             }
     }
+    override suspend fun toggleBookmark(chapterId: String, bookmarked: Boolean) {
+        chapterDao.updateBookmark(chapterId, bookmarked)
+    }
+
 }
 
 // ============================================================
@@ -161,13 +165,15 @@ fun Book.toEntity() = BookEntity(
 fun ChapterEntity.toDomain() = Chapter(
     id = id, bookId = bookId, title = title,
     content = content, translatedContent = translatedContent,
-    chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded
+    chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded,
+    isBookmarked = isBookmarked
 )
 
 fun Chapter.toEntity() = ChapterEntity(
     id = id, bookId = bookId, title = title,
     content = content, translatedContent = translatedContent,
-    chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded
+    chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded,
+    isBookmarked = isBookmarked
 )
 
 fun ReadingHistoryEntity.toDomain() = ReadingHistory(

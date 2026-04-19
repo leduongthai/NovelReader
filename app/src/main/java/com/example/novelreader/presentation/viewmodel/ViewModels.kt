@@ -16,6 +16,14 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import androidx.datastore.preferences.core.Preferences
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.combine
+import com.example.novelreader.data.repository.ReviewRepository
+import com.example.novelreader.domain.model.Review
+import kotlinx.coroutines.flow.map
+import com.example.novelreader.data.repository.GroupRepository
+import com.example.novelreader.domain.model.ChatGroup
 
 // ============================================================
 // BOOKSHELF VIEW MODEL
@@ -91,9 +99,10 @@ class DiscoverViewModel @Inject constructor(
     // Currently selected crawler config
     var currentConfig: CrawlerConfig = CrawlerConfigs.TRUYEN_FULL
 
-    fun loadNovels(pageUrl: String = "${CrawlerConfigs.TRUYEN_FULL.baseUrl}/danh-sach/truyen-full") {
+    fun loadNovels(pageUrl: String = "${CrawlerConfigs.TANG_THU_VIEN.baseUrl}/danh-sach/truyen-full") {
         viewModelScope.launch {
             _uiState.value = DiscoverUiState.Loading
+            currentConfig = CrawlerConfigs.TANG_THU_VIEN
             crawler.discoverNovels(pageUrl, currentConfig)
                 .onSuccess {
                     _novels.value = it
@@ -121,6 +130,19 @@ class DiscoverViewModel @Inject constructor(
     fun addToBookshelf(detailUrl: String) = viewModelScope.launch {
         bookRepo.crawlAndSaveNovel(detailUrl, currentConfig)
     }
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    val filteredNovels: StateFlow<List<Book>> = combine(_novels, _searchQuery) { list, query ->
+        if (query.isBlank()) list
+        else list.filter {
+            it.title.contains(query, ignoreCase = true) ||
+                    it.author.contains(query, ignoreCase = true)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun onSearchQueryChange(query: String) { _searchQuery.value = query }
 }
 
 sealed class DiscoverUiState {
@@ -282,6 +304,17 @@ class ReaderViewModel @Inject constructor(
     fun updateTranslationPrompt(prompt: String) = viewModelScope.launch {
         dataStore.edit { it[TRANSLATION_PROMPT] = prompt }
     }
+    fun toggleBookmark() {
+        val chapter = _currentChapter.value ?: return
+        viewModelScope.launch {
+            val newState = !chapter.isBookmarked
+            chapterRepo.toggleBookmark(chapter.id, newState)
+            _currentChapter.value = chapter.copy(isBookmarked = newState)
+        }
+    }
+    fun getShareLink(bookId: String): String {
+        return "https://novelreader.app/story/$bookId"
+    }
 }
 
 sealed class ReaderUiState {
@@ -304,11 +337,13 @@ sealed class TranslationState {
 
 @HiltViewModel
 class CommunityViewModel @Inject constructor(
-    private val communityRepo: CommunityRepository
+    private val communityRepo: CommunityRepository,
+    private val bookRepo: BookRepository
 ) : ViewModel() {
 
     val messages: StateFlow<List<ChatMessage>> = communityRepo.getChatMessages()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val currentUserId: String? get() = communityRepo.currentUserId
 
     val prompts: StateFlow<List<Prompt>> = communityRepo.getPrompts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -343,6 +378,25 @@ class CommunityViewModel @Inject constructor(
         communityRepo.shareNovelFile(title, fileBytes)
             .onSuccess { _actionState.value = CommunityActionState.Success("Chia sẻ thành công!") }
             .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi chia sẻ") }
+    }
+    fun downloadAndImport(novel: SharedNovel) = viewModelScope.launch {
+        _actionState.value = CommunityActionState.Loading
+        runCatching {
+            // Tải file từ URL về
+            val url = java.net.URL(novel.fileUrl)
+            val bytes = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                url.readBytes()
+            }
+            val text = bytes.toString(Charsets.UTF_8)
+            // Import vào kệ sách
+            bookRepo.importTxtFile(text, novel.title, null).getOrThrow()
+        }
+            .onSuccess {
+                _actionState.value = CommunityActionState.Success("Đã thêm \"${novel.title}\" vào kệ sách!")
+            }
+            .onFailure {
+                _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi tải truyện")
+            }
     }
 
     fun clearActionState() { _actionState.value = CommunityActionState.Idle }
@@ -406,6 +460,20 @@ class ProfileViewModel @Inject constructor(
         _authState.value = AuthState.LoggedOut
     }
 
+    fun resetPassword(email: String) = viewModelScope.launch {
+        if (email.isBlank()) {
+            _authState.value = AuthState.Error("Vui lòng nhập email")
+            return@launch
+        }
+        _authState.value = AuthState.Loading
+        try {
+            communityRepo.auth.sendPasswordResetEmail(email).await()
+            _authState.value = AuthState.PasswordResetSent
+        } catch (e: Exception) {
+            _authState.value = AuthState.Error(e.message ?: "Gửi email thất bại")
+        }
+    }
+
     fun saveApiKey(key: String) = viewModelScope.launch {
         dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key }
     }
@@ -419,6 +487,181 @@ sealed class AuthState {
     object Idle : AuthState()
     object Loading : AuthState()
     object LoggedOut : AuthState()
+    object PasswordResetSent : AuthState()
     data class LoggedIn(val user: User) : AuthState()
     data class Error(val message: String) : AuthState()
+}
+
+// ============================================================
+// BOOK DETAIL VIEW MODEL
+// ============================================================
+
+@HiltViewModel
+class BookDetailViewModel @Inject constructor(
+    private val bookRepo: BookRepository,
+    private val chapterRepo: ChapterRepository
+) : ViewModel() {
+
+    private val _book = MutableStateFlow<Book?>(null)
+    val book: StateFlow<Book?> = _book.asStateFlow()
+
+    val chapters: StateFlow<List<Chapter>> get() = _chapters
+    private val _chapters = MutableStateFlow<List<Chapter>>(emptyList())
+
+    fun loadBook(bookId: String) {
+        viewModelScope.launch {
+            _book.value = bookRepo.getBookById(bookId)
+            chapterRepo.getChaptersByBook(bookId).collect {
+                _chapters.value = it
+            }
+        }
+    }
+}
+
+@HiltViewModel
+class ReviewViewModel @Inject constructor(
+    private val reviewRepo: ReviewRepository,
+    private val communityRepo: CommunityRepository
+) : ViewModel() {
+
+    private val _reviews = MutableStateFlow<List<Review>>(emptyList())
+    val reviews: StateFlow<List<Review>> = _reviews.asStateFlow()
+
+    private val _myReview = MutableStateFlow<Review?>(null)
+    val myReview: StateFlow<Review?> = _myReview.asStateFlow()
+
+    private val _uiState = MutableStateFlow<ReviewUiState>(ReviewUiState.Idle)
+    val uiState: StateFlow<ReviewUiState> = _uiState.asStateFlow()
+
+    val isLoggedIn: Boolean get() = communityRepo.isLoggedIn
+
+    val averageRating: StateFlow<Float> = _reviews.map { list ->
+        if (list.isEmpty()) 0f else list.sumOf { it.rating }.toFloat() / list.size
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0f)
+
+    private var currentBookKey = ""
+    private var currentBookId = ""
+    private var currentSourceUrl = ""
+
+    fun loadReviews(bookKey: String, bookId: String = "", sourceUrl: String = "") {
+        currentBookKey = bookKey
+        currentBookId = bookId
+        currentSourceUrl = sourceUrl
+        viewModelScope.launch {
+            reviewRepo.getReviews(bookKey).collect { _reviews.value = it }
+        }
+        viewModelScope.launch {
+            if (isLoggedIn) _myReview.value = reviewRepo.getMyReview(bookKey)
+        }
+    }
+
+    fun submitReview(rating: Int, comment: String) {
+        if (rating == 0) { _uiState.value = ReviewUiState.Error("Vui lòng chọn số sao"); return }
+        viewModelScope.launch {
+            _uiState.value = ReviewUiState.Loading
+            reviewRepo.submitReview(currentBookKey, currentBookId, currentSourceUrl, rating, comment)
+                .onSuccess {
+                    _uiState.value = ReviewUiState.Success("Đánh giá đã được gửi!")
+                    _myReview.value = reviewRepo.getMyReview(currentBookKey)
+                }
+                .onFailure { _uiState.value = ReviewUiState.Error(it.message ?: "Lỗi gửi đánh giá") }
+        }
+    }
+
+    fun clearUiState() { _uiState.value = ReviewUiState.Idle }
+}
+
+sealed class ReviewUiState {
+    object Idle : ReviewUiState()
+    object Loading : ReviewUiState()
+    data class Success(val message: String) : ReviewUiState()
+    data class Error(val message: String) : ReviewUiState()
+}
+
+@HiltViewModel
+class GroupViewModel @Inject constructor(
+    private val groupRepo: GroupRepository
+) : ViewModel() {
+
+    private val _groups = MutableStateFlow<List<ChatGroup>>(emptyList())
+    val groups: StateFlow<List<ChatGroup>> = _groups.asStateFlow()
+
+    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _currentGroup = MutableStateFlow<ChatGroup?>(null)
+    val currentGroup: StateFlow<ChatGroup?> = _currentGroup.asStateFlow()
+
+    private val _uiState = MutableStateFlow<GroupUiState>(GroupUiState.Idle)
+    val uiState: StateFlow<GroupUiState> = _uiState.asStateFlow()
+
+    val currentUserId: String? get() = groupRepo.currentUserId
+    val isLoggedIn: Boolean get() = groupRepo.isLoggedIn
+
+    init {
+        viewModelScope.launch {
+            groupRepo.getGroups().collect { _groups.value = it }
+        }
+    }
+
+    fun openGroup(group: ChatGroup) {
+        _currentGroup.value = group
+        viewModelScope.launch {
+            groupRepo.getMessages(group.id).collect { _messages.value = it }
+        }
+    }
+
+    fun createGroup(name: String, description: String) = viewModelScope.launch {
+        if (name.isBlank()) { _uiState.value = GroupUiState.Error("Tên nhóm không được trống"); return@launch }
+        _uiState.value = GroupUiState.Loading
+        groupRepo.createGroup(name, description)
+            .onSuccess { _uiState.value = GroupUiState.Success("Tạo nhóm thành công!") }
+            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi tạo nhóm") }
+    }
+
+    fun joinGroup(groupId: String) = viewModelScope.launch {
+        groupRepo.joinGroup(groupId)
+            .onSuccess { _uiState.value = GroupUiState.Success("Đã tham gia nhóm!") }
+            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi tham gia nhóm") }
+    }
+
+    fun leaveGroup(groupId: String) = viewModelScope.launch {
+        groupRepo.leaveGroup(groupId)
+            .onSuccess { _uiState.value = GroupUiState.Success("Đã rời nhóm") }
+            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi rời nhóm") }
+    }
+
+    fun sendMessage(content: String, replyToId: String? = null, replyToContent: String? = null) {
+        val groupId = _currentGroup.value?.id ?: return
+        viewModelScope.launch {
+            groupRepo.sendMessage(groupId, content, replyToId, replyToContent)
+                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi gửi tin") }
+        }
+    }
+
+    fun deleteMessage(messageId: String) {
+        val groupId = _currentGroup.value?.id ?: return
+        viewModelScope.launch {
+            groupRepo.deleteMessage(groupId, messageId)
+                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi xóa tin") }
+        }
+    }
+
+    fun kickMember(targetUid: String) {
+        val groupId = _currentGroup.value?.id ?: return
+        viewModelScope.launch {
+            groupRepo.kickMember(groupId, targetUid)
+                .onSuccess { _uiState.value = GroupUiState.Success("Đã kick thành viên") }
+                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi kick thành viên") }
+        }
+    }
+
+    fun clearUiState() { _uiState.value = GroupUiState.Idle }
+}
+
+sealed class GroupUiState {
+    object Idle : GroupUiState()
+    object Loading : GroupUiState()
+    data class Success(val message: String) : GroupUiState()
+    data class Error(val message: String) : GroupUiState()
 }

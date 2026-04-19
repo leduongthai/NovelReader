@@ -31,6 +31,8 @@ import com.example.novelreader.presentation.viewmodel.ReaderViewModel
 import com.example.novelreader.presentation.viewmodel.TranslationState
 import java.util.Locale
 import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 
 // ============================================================
 // READER SCREEN — Full-featured novel reader
@@ -114,7 +116,7 @@ fun ReaderScreen(
             .fillMaxSize()
             .background(bg)
             .pointerInput(Unit) {
-                detectTapGestures { viewModel.run { showControls = !showControls } }
+                detectTapGestures { showControls = !showControls }
             }
     ) {
         when (readerState) {
@@ -186,8 +188,19 @@ fun ReaderScreen(
         ) {
             ReaderTopBar(
                 chapterTitle = chapter?.title ?: "",
+                isBookmarked = chapter?.isBookmarked ?: false,
                 onBack = onBack,
-                onChapterList = { showChapterList = true }
+                onChapterList = { showChapterList = true },
+                onToggleBookmark = { viewModel.toggleBookmark() },
+                onShare = {
+                    val link = viewModel.getShareLink(bookId)
+                    val sendIntent = android.content.Intent().apply {
+                        action = android.content.Intent.ACTION_SEND
+                        putExtra(android.content.Intent.EXTRA_TEXT, "Đọc truyện này cùng mình: $link")
+                        type = "text/plain"
+                    }
+                    context.startActivity(android.content.Intent.createChooser(sendIntent, "Chia sẻ truyện"))
+                }
             )
         }
 
@@ -277,7 +290,13 @@ fun getFontFamily(name: String): FontFamily = when (name) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReaderTopBar(chapterTitle: String, onBack: () -> Unit, onChapterList: () -> Unit) {
+fun ReaderTopBar(chapterTitle: String,
+                 isBookmarked: Boolean,
+                 onBack: () -> Unit,
+                 onChapterList: () -> Unit,
+                 onToggleBookmark: () -> Unit,
+                 onShare: () -> Unit
+) {
     TopAppBar(
         title = {
             Text(chapterTitle, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
@@ -286,6 +305,7 @@ fun ReaderTopBar(chapterTitle: String, onBack: () -> Unit, onChapterList: () -> 
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Quay lại") }
         },
         actions = {
+            IconButton(onClick = onShare) { Icon(Icons.Default.Share, "Chia sẻ") }
             IconButton(onClick = onChapterList) { Icon(Icons.Default.List, "Danh sách chương") }
         },
         colors = TopAppBarDefaults.topAppBarColors(

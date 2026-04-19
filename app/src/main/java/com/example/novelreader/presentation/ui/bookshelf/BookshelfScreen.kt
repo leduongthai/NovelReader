@@ -41,6 +41,7 @@ import kotlin.math.roundToInt
 @Composable
 fun BookshelfScreen(
     onOpenReader: (bookId: String, chapterIndex: Int) -> Unit,
+    onOpenDetail: (bookId: String) -> Unit,
     viewModel: BookshelfViewModel = hiltViewModel()
 ) {
     val books by viewModel.books.collectAsState()
@@ -115,7 +116,8 @@ fun BookshelfScreen(
                     book = book,
                     history = history,
                     onClick = { onOpenReader(book.id, history?.chapterIndex ?: 0) },
-                    onDelete = { viewModel.deleteBook(book.id) }
+                    onDelete = { viewModel.deleteBook(book.id) },
+                    onOpenDetail = { onOpenDetail(book.id) }
                 )
             }
         }
@@ -205,7 +207,8 @@ fun BookGridItem(
     book: Book,
     history: ReadingHistory?,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onOpenDetail: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val progress = history?.scrollPosition ?: 0f
@@ -261,7 +264,7 @@ fun BookGridItem(
                     )
                     DropdownMenuItem(
                         text = { Text("Thông tin truyện") },
-                        onClick = { /* Navigate to info */ showMenu = false },
+                        onClick = { onOpenDetail(); showMenu = false },
                         leadingIcon = { Icon(Icons.Default.Info, null) }
                     )
                 }
