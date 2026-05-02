@@ -13,7 +13,7 @@ import com.example.novelreader.data.local.entity.*
         PromptEntity::class,
         UserEntity::class
     ],
-    version = 2,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

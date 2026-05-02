@@ -9,6 +9,7 @@ interface BookRepository {
     suspend fun getBookById(id: String): Book?
     suspend fun addBook(book: Book)
     suspend fun deleteBook(bookId: String)
+    suspend fun updateBookInfo(bookId: String, title: String, author: String)
     fun getReadingProgress(bookId: String): Flow<ReadingHistory?>
     suspend fun updateReadingProgress(history: ReadingHistory)
     suspend fun crawlAndSaveNovel(detailUrl: String, config: CrawlerConfig): Result<Book>

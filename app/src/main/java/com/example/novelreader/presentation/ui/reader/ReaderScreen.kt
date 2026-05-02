@@ -52,6 +52,7 @@ fun ReaderScreen(
     val readerState by viewModel.readerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val translationState by viewModel.translationState.collectAsState()
+    val configReady by viewModel.configReady.collectAsState()
     val context = LocalContext.current
 
     var showControls by remember { mutableStateOf(false) }
@@ -74,10 +75,11 @@ fun ReaderScreen(
         viewModel.loadBook(bookId)
     }
 
-    // Open initial chapter once chapters loaded
-    LaunchedEffect(chapters.size) {
-        if (chapters.isNotEmpty() && chapter == null) {
-            val c = chapters.getOrNull(initialChapterIndex) ?: chapters.first()
+    // Open initial chapter only after BOTH config AND chapters are ready
+    LaunchedEffect(configReady) {
+        if (configReady && chapter == null) {
+            val c = chapters.getOrNull(initialChapterIndex) ?: chapters.firstOrNull() ?: return@LaunchedEffect
+            android.util.Log.d("Crawler", "ReaderScreen: opening chapter index=$initialChapterIndex title=${c.title}")
             viewModel.openChapter(c)
         }
     }
@@ -221,7 +223,7 @@ fun ReaderScreen(
                 onNextChapter = { viewModel.navigateChapter(1) },
                 onSeek = { index ->
                     val c = chapters.getOrNull(index)
-                    c?.let { viewModel.openChapter(it) }
+                    c?.let { viewModel.openChapter(it) }   // config resolved internally
                 },
                 onTranslate = {
                     viewModel.translateCurrentChapter()
@@ -269,7 +271,7 @@ fun ReaderScreen(
             chapters = chapters,
             currentIndex = chapter?.chapterIndex ?: 0,
             onSelectChapter = { c ->
-                viewModel.openChapter(c)
+                viewModel.openChapter(c)   // config resolved internally
                 showChapterList = false
             },
             onDismiss = { showChapterList = false }

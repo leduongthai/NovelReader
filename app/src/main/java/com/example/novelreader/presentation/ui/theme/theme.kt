@@ -12,10 +12,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// ============================================================
-// APP THEME — Material3 with dynamic color support
-// ============================================================
-
 private val DarkColorScheme = darkColorScheme(
     primary          = Color(0xFF7BB3F0),
     onPrimary        = Color(0xFF003060),

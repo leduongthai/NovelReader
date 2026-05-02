@@ -1,5 +1,6 @@
 package com.example.novelreader.data.repository
 
+import android.util.Log
 import com.example.novelreader.data.local.dao.*
 import com.example.novelreader.data.local.entity.*
 import com.example.novelreader.data.remote.api.GeminiTranslationService
@@ -11,6 +12,7 @@ import com.example.novelreader.domain.repository.BookRepository
 import com.example.novelreader.domain.repository.ChapterRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -41,6 +43,9 @@ class BookRepositoryImpl @Inject constructor(
         historyDao.deleteHistoryForBook(bookId)
     }
 
+    override suspend fun updateBookInfo(bookId: String, title: String, author: String) =
+        bookDao.updateBookInfo(bookId, title, author)
+
     override fun getReadingProgress(bookId: String): Flow<ReadingHistory?> =
         historyDao.getAllHistory().map { list ->
             list.firstOrNull { it.bookId == bookId }?.toDomain()
@@ -62,29 +67,30 @@ class BookRepositoryImpl @Inject constructor(
         }
     }
 
-    /** Import a TXT file: parse chapters and save */
+    /** Import a TXT file: parse chapters and save — runs on IO dispatcher */
     override suspend fun importTxtFile(
         rawText: String,
         bookTitle: String,
         customRegex: String?
-    ): Result<Book> = runCatching {
-        val bookId = UUID.randomUUID().toString()
-        val book = Book(
-            id = bookId,
-            title = bookTitle,
-            source = "local"
-        )
+    ): Result<Book> = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching {
+            val bookId = UUID.randomUUID().toString()
+            val book = Book(id = bookId, title = bookTitle, source = "local")
 
-        val parser = TxtChapterParser()
-        val regex = customRegex?.let { Regex(it, setOf(RegexOption.MULTILINE)) }
-            ?: TxtChapterParser.DEFAULT_CHAPTER_REGEX
+            val parser = TxtChapterParser()
+            val regex = customRegex?.let { Regex(it, setOf(RegexOption.MULTILINE)) }
+                ?: TxtChapterParser.DEFAULT_CHAPTER_REGEX
 
-        val chapters = parser.parse(rawText, bookId, regex)
+            val chapters = parser.parse(rawText, bookId, regex)
 
-        bookDao.insertBook(book.copy(totalChapters = chapters.size).toEntity())
-        chapterDao.insertChapters(chapters.map { it.toEntity() })
+            bookDao.insertBook(book.copy(totalChapters = chapters.size).toEntity())
+            // Chia batch để tránh transaction quá lớn với file nhiều chương
+            chapters.chunked(200).forEach { batch ->
+                chapterDao.insertChapters(batch.map { it.toEntity() })
+            }
 
-        book
+            book.copy(totalChapters = chapters.size)
+        }
     }
 }
 
@@ -115,13 +121,17 @@ class ChapterRepositoryImpl @Inject constructor(
         chapter: Chapter,
         config: CrawlerConfig?
     ): Result<Chapter> {
+        Log.d("Crawler", "ensureContentLoaded id=${chapter.id} isLoaded=${chapter.isLoaded} sourceUrl=${chapter.sourceUrl} config=${config?.baseUrl}")
         if (chapter.isLoaded) return Result.success(chapter)
         if (chapter.sourceUrl.isBlank()) return Result.failure(Exception("No source URL"))
         if (config == null) return Result.failure(Exception("No crawler config"))
 
         return crawler.fetchChapterContent(chapter.sourceUrl, config).map { content ->
+            Log.d("Crawler", "ensureContentLoaded fetched ${content.length} chars")
             chapterDao.updateContent(chapter.id, content)
             chapter.copy(content = content, isLoaded = true)
+        }.onFailure {
+            Log.e("Crawler", "ensureContentLoaded failed: ${it.message}", it)
         }
     }
 

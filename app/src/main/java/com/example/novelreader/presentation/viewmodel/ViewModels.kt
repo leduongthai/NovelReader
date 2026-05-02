@@ -65,8 +65,17 @@ class BookshelfViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = BookshelfUiState.Loading
             bookRepo.importTxtFile(rawText, title, customRegex)
-                .onSuccess { _uiState.value = BookshelfUiState.ImportSuccess(it) }
-                .onFailure { _uiState.value = BookshelfUiState.Error(it.message ?: "Lỗi nhập file") }
+                .onSuccess {
+                    _uiState.value = BookshelfUiState.ImportSuccess(it)
+                    // Reset về Idle sau 100ms để lần import tiếp theo vẫn trigger LaunchedEffect
+                    kotlinx.coroutines.delay(100)
+                    _uiState.value = BookshelfUiState.Idle
+                }
+                .onFailure {
+                    _uiState.value = BookshelfUiState.Error(it.message ?: "Lỗi nhập file")
+                    kotlinx.coroutines.delay(100)
+                    _uiState.value = BookshelfUiState.Idle
+                }
         }
 }
 
@@ -97,12 +106,12 @@ class DiscoverViewModel @Inject constructor(
     val uiState: StateFlow<DiscoverUiState> = _uiState.asStateFlow()
 
     // Currently selected crawler config
-    var currentConfig: CrawlerConfig = CrawlerConfigs.TRUYEN_FULL
+    var currentConfig: CrawlerConfig = CrawlerConfigs.SIX_NINE_HSW
 
-    fun loadNovels(pageUrl: String = "${CrawlerConfigs.TANG_THU_VIEN.baseUrl}/danh-sach/truyen-full") {
+    fun loadNovels(pageUrl: String = CrawlerConfigs.SIX_NINE_HSW.homeUrl) {
         viewModelScope.launch {
             _uiState.value = DiscoverUiState.Loading
-            currentConfig = CrawlerConfigs.TANG_THU_VIEN
+            currentConfig = CrawlerConfigs.SIX_NINE_HSW
             crawler.discoverNovels(pageUrl, currentConfig)
                 .onSuccess {
                     _novels.value = it
@@ -134,6 +143,7 @@ class DiscoverViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    // Local filter on already-loaded novels (instant feedback while typing)
     val filteredNovels: StateFlow<List<Book>> = combine(_novels, _searchQuery) { list, query ->
         if (query.isBlank()) list
         else list.filter {
@@ -142,7 +152,34 @@ class DiscoverViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun onSearchQueryChange(query: String) { _searchQuery.value = query }
+    private var searchJob: kotlinx.coroutines.Job? = null
+
+    fun onSearchQueryChange(query: String) {
+        _searchQuery.value = query
+    }
+
+    /**
+     * Performs a remote search on the configured site.
+     * Call this when the user submits the search (keyboard Done / search button).
+     */
+    fun searchRemote(query: String) {
+        if (query.isBlank()) {
+            loadNovels()
+            return
+        }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            _uiState.value = DiscoverUiState.Loading
+            crawler.searchNovels(query, currentConfig)
+                .onSuccess {
+                    _novels.value = it
+                    _uiState.value = DiscoverUiState.Success
+                }
+                .onFailure {
+                    _uiState.value = DiscoverUiState.Error(it.message ?: "Tìm kiếm thất bại")
+                }
+        }
+    }
 }
 
 sealed class DiscoverUiState {
@@ -163,6 +200,14 @@ sealed class DetailUiState {
 // READER VIEW MODEL
 // ============================================================
 
+/** Resolve the correct CrawlerConfig based on the book's sourceUrl. */
+fun configForBook(sourceUrl: String): CrawlerConfig? = when {
+    sourceUrl.contains("69hsw.com")           -> CrawlerConfigs.SIX_NINE_HSW
+    sourceUrl.contains("truyenfull.io")       -> CrawlerConfigs.TRUYEN_FULL
+    sourceUrl.contains("tangthuvien.vn")      -> CrawlerConfigs.TANG_THU_VIEN
+    else                                      -> null
+}
+
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     private val chapterRepo: ChapterRepository,
@@ -178,6 +223,13 @@ class ReaderViewModel @Inject constructor(
 
     private val _readerState = MutableStateFlow<ReaderUiState>(ReaderUiState.Idle)
     val readerState: StateFlow<ReaderUiState> = _readerState.asStateFlow()
+
+    // Resolved once when loadBook() is called; used for all chapter fetches
+    private var crawlerConfig: CrawlerConfig? = null
+
+    // Emits true once crawlerConfig + first chapter batch are both ready
+    private val _configReady = MutableStateFlow(false)
+    val configReady: StateFlow<Boolean> = _configReady.asStateFlow()
 
     private val _settings = MutableStateFlow(ReaderSettings())
     val settings: StateFlow<ReaderSettings> = _settings.asStateFlow()
@@ -214,15 +266,30 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun loadBook(bookId: String) {
+        // Coroutine 1: resolve crawler config from book metadata, then signal ready
         viewModelScope.launch {
-            chapterRepo.getChaptersByBook(bookId).collect { _chapters.value = it }
+            val book = bookRepo.getBookById(bookId)
+            if (book != null) {
+                crawlerConfig = configForBook(book.sourceUrl)
+                android.util.Log.d("Crawler", "loadBook: source=${book.source} sourceUrl=${book.sourceUrl} config=${crawlerConfig?.baseUrl}")
+            }
+            // Wait until chapters have been emitted, then signal ready
+            _chapters.first { it.isNotEmpty() }
+            _configReady.value = true
+        }
+        // Coroutine 2: stream chapters from DB (suspend forever — must be separate)
+        viewModelScope.launch {
+            chapterRepo.getChaptersByBook(bookId).collect { list ->
+                _chapters.value = list
+            }
         }
     }
 
-    fun openChapter(chapter: Chapter, crawlerConfig: CrawlerConfig? = null) {
+    fun openChapter(chapter: Chapter, externalConfig: CrawlerConfig? = null) {
+        val config = externalConfig ?: crawlerConfig
         viewModelScope.launch {
             _readerState.value = ReaderUiState.Loading
-            chapterRepo.ensureContentLoaded(chapter, crawlerConfig)
+            chapterRepo.ensureContentLoaded(chapter, config)
                 .onSuccess {
                     _currentChapter.value = it
                     _readerState.value = ReaderUiState.Ready
@@ -233,10 +300,10 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun navigateChapter(delta: Int, crawlerConfig: CrawlerConfig? = null) {
+    fun navigateChapter(delta: Int) {
         val current = _currentChapter.value ?: return
         val next = _chapters.value.firstOrNull { it.chapterIndex == current.chapterIndex + delta }
-        next?.let { openChapter(it, crawlerConfig) }
+        next?.let { openChapter(it) }
     }
 
     fun translateCurrentChapter() {
@@ -508,6 +575,9 @@ class BookDetailViewModel @Inject constructor(
     val chapters: StateFlow<List<Chapter>> get() = _chapters
     private val _chapters = MutableStateFlow<List<Chapter>>(emptyList())
 
+    private val _saveState = MutableStateFlow<SaveState>(SaveState.Idle)
+    val saveState: StateFlow<SaveState> = _saveState.asStateFlow()
+
     fun loadBook(bookId: String) {
         viewModelScope.launch {
             _book.value = bookRepo.getBookById(bookId)
@@ -516,6 +586,24 @@ class BookDetailViewModel @Inject constructor(
             }
         }
     }
+
+    fun updateBookInfo(title: String, author: String) {
+        val bookId = _book.value?.id ?: return
+        if (title.isBlank()) { _saveState.value = SaveState.Error("Tên truyện không được để trống"); return }
+        viewModelScope.launch {
+            bookRepo.updateBookInfo(bookId, title.trim(), author.trim())
+            _book.value = _book.value?.copy(title = title.trim(), author = author.trim())
+            _saveState.value = SaveState.Saved
+            kotlinx.coroutines.delay(100)
+            _saveState.value = SaveState.Idle
+        }
+    }
+}
+
+sealed class SaveState {
+    object Idle : SaveState()
+    object Saved : SaveState()
+    data class Error(val message: String) : SaveState()
 }
 
 @HiltViewModel

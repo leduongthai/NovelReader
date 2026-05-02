@@ -25,6 +25,9 @@ interface BookDao {
     @Query("DELETE FROM books WHERE id = :bookId")
     suspend fun deleteBookById(bookId: String)
 
+    @Query("UPDATE books SET title = :title, author = :author WHERE id = :id")
+    suspend fun updateBookInfo(id: String, title: String, author: String)
+
     @Query("SELECT COUNT(*) FROM books")
     suspend fun getBookCount(): Int
 }

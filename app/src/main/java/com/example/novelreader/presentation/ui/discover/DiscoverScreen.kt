@@ -7,13 +7,17 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,6 +79,10 @@ fun DiscoverScreen(
                         }
                     }
                 },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = { viewModel.searchRemote(searchQuery) }
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -105,20 +113,43 @@ fun DiscoverScreen(
                     }
                 }
                 else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        contentPadding = PaddingValues(
-                            start = 12.dp, end = 12.dp,
-                            top = 8.dp,
-                            bottom = 8.dp
-                        ),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(novels, key = { it.id }) { book ->
-                            DiscoverBookCard(book = book, onClick = {
-                                onOpenDetail(book.sourceUrl)
-                            })
+                    if (novels.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.SearchOff, null, modifier = Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    if (searchQuery.isNotBlank()) "Không tìm thấy \"$searchQuery\""
+                                    else "Không có dữ liệu. Kiểm tra kết nối mạng.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (searchQuery.isBlank()) {
+                                    Button(onClick = { viewModel.loadNovels() }) { Text("Thử lại") }
+                                }
+                            }
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            contentPadding = PaddingValues(
+                                start = 12.dp, end = 12.dp,
+                                top = 8.dp,
+                                bottom = 8.dp
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(novels, key = { it.id }) { book ->
+                                DiscoverBookCard(book = book, onClick = {
+                                    onOpenDetail(book.sourceUrl)
+                                })
+                            }
                         }
                     }
                 }
