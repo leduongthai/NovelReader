@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -43,7 +44,7 @@ import com.example.novelreader.presentation.viewmodel.CommunityActionState
 fun CommunityScreen(
     onOpenGroupList: () -> Unit,
     viewModel: CommunityViewModel = hiltViewModel()) {
-    val tabs = listOf("Chat", "Chia sẻ truyện", "Thảo luận", "Góp ý & báo lỗi")
+    val tabs = listOf("Chat", "Chia sẻ truyện", "Diễn đàn")
     var selectedTab by remember { mutableStateOf(0) }
     val actionState by viewModel.actionState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -81,10 +82,9 @@ fun CommunityScreen(
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (selectedTab) {
-                0 -> GroupListButton(onOpenGroupList = onOpenGroupList)
+                0 -> ChatTab(viewModel = viewModel, onOpenGroupList = onOpenGroupList)
                 1 -> SharedNovelsTab(viewModel)
                 2 -> PromptForumTab(viewModel)
-                3 -> FeedbackTab()
             }
         }
     }
@@ -95,7 +95,10 @@ fun CommunityScreen(
 // ============================================================
 
 @Composable
-fun ChatTab(viewModel: CommunityViewModel) {
+fun ChatTab(
+    viewModel: CommunityViewModel,
+    onOpenGroupList: () -> Unit
+) {
     val messages by viewModel.messages.collectAsState()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -116,6 +119,12 @@ fun ChatTab(viewModel: CommunityViewModel) {
             Icon(Icons.Default.Forum, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(8.dp))
             Text("Chat cộng đồng", fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onOpenGroupList) {
+                Icon(Icons.Default.Groups, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Nhóm")
+            }
         }
         HorizontalDivider()
 
@@ -126,8 +135,18 @@ fun ChatTab(viewModel: CommunityViewModel) {
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(messages, key = { it.id }) { message ->
-                ChatBubble(message = message, isOwn = false /* TODO: compare userId */)
+            if (messages.isEmpty()) {
+                item {
+                    CommunityEmptyState(
+                        icon = Icons.Default.Forum,
+                        title = "Chưa có tin nhắn",
+                        message = "Tin nhắn cộng đồng sẽ xuất hiện ở đây."
+                    )
+                }
+            } else {
+                items(messages, key = { it.id }) { message ->
+                    ChatBubble(message = message, isOwn = message.userId == viewModel.currentUserId)
+                }
             }
         }
 
@@ -294,11 +313,25 @@ fun SharedNovelsTab(viewModel: CommunityViewModel) {
             }
         }
 
-        items(novels, key = { it.id }) { novel ->
-            SharedNovelCard(
-                novel = novel,
-                onDownload = { viewModel.downloadAndImport(novel) }
-            )
+        if (novels.isEmpty()) {
+            item {
+                CommunityEmptyState(
+                    icon = Icons.Default.Article,
+                    title = "Chưa có truyện chia sẻ",
+                    message = if (viewModel.isLoggedIn) {
+                        "Bạn có thể tải file TXT lên để chia sẻ cho mọi người."
+                    } else {
+                        "Đăng nhập để chia sẻ truyện TXT của bạn."
+                    }
+                )
+            }
+        } else {
+            items(novels, key = { it.id }) { novel ->
+                SharedNovelCard(
+                    novel = novel,
+                    onDownload = { viewModel.downloadAndImport(novel) }
+                )
+            }
         }
     }
 
@@ -391,11 +424,26 @@ fun PromptForumTab(viewModel: CommunityViewModel) {
             }
         }
 
-        items(prompts, key = { it.id }) { prompt ->
-            PromptCard(
-                prompt = prompt,
-                onLike = { viewModel.likePrompt(prompt.id) }
-            )
+        if (prompts.isEmpty()) {
+            item {
+                CommunityEmptyState(
+                    icon = Icons.Default.Lightbulb,
+                    title = "Chưa có prompt",
+                    message = if (viewModel.isLoggedIn) {
+                        "Đăng prompt dịch hay để mọi người cùng dùng."
+                    } else {
+                        "Đăng nhập để đăng và đánh giá prompt."
+                    }
+                )
+            }
+        } else {
+            items(prompts, key = { it.id }) { prompt ->
+                PromptCard(
+                    prompt = prompt,
+                    canLike = viewModel.isLoggedIn,
+                    onLike = { viewModel.likePrompt(prompt.id) }
+                )
+            }
         }
     }
 
@@ -411,7 +459,7 @@ fun PromptForumTab(viewModel: CommunityViewModel) {
 }
 
 @Composable
-fun PromptCard(prompt: Prompt, onLike: () -> Unit) {
+fun PromptCard(prompt: Prompt, canLike: Boolean, onLike: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var expanded by remember { mutableStateOf(false) }
 
@@ -441,7 +489,7 @@ fun PromptCard(prompt: Prompt, onLike: () -> Unit) {
                     }) {
                         Icon(Icons.Default.ContentCopy, "Sao chép", modifier = Modifier.size(20.dp))
                     }
-                    IconButton(onClick = onLike) {
+                    IconButton(onClick = onLike, enabled = canLike) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.ThumbUp, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(2.dp))
@@ -451,6 +499,35 @@ fun PromptCard(prompt: Prompt, onLike: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CommunityEmptyState(
+    icon: ImageVector,
+    title: String,
+    message: String
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 72.dp, horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(48.dp),
+            tint = MaterialTheme.colorScheme.outline
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(title, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

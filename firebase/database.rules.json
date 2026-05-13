@@ -1,0 +1,83 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "chat": {
+      "messages": {
+        ".read": true,
+        ".indexOn": ["timestamp"],
+        "$messageId": {
+          ".write": "auth != null && ((!data.exists() && newData.child('userId').val() === auth.uid) || (data.exists() && (data.child('userId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')))"
+        }
+      }
+    },
+
+    "community": {
+      "prompts": {
+        ".read": true,
+        ".indexOn": ["likes", "createdAt"],
+        "$promptId": {
+          ".write": "auth != null && ((!data.exists() && newData.child('authorId').val() === auth.uid) || (data.exists() && (data.child('authorId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')))",
+          "likes": {
+            ".write": "auth != null && newData.isNumber() && (!data.exists() || newData.val() >= data.val())"
+          }
+        }
+      },
+
+      "shared_novels": {
+        ".read": true,
+        ".indexOn": ["uploadedAt"],
+        "$novelId": {
+          ".write": "auth != null && ((!data.exists() && newData.child('uploaderId').val() === auth.uid) || (data.exists() && (data.child('uploaderId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')))",
+          "downloadCount": {
+            ".write": "newData.isNumber() && (!data.exists() || newData.val() >= data.val())"
+          }
+        }
+      },
+
+      "shared_novels_content": {
+        "$novelId": {
+          ".read": true,
+          ".write": "auth != null && ((!data.exists() && newData.child('uploaderId').val() === auth.uid) || data.child('uploaderId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')"
+        }
+      },
+
+      "reviews": {
+        "$bookId": {
+          ".read": true,
+          ".indexOn": ["createdAt"],
+          "$reviewId": {
+            ".write": "auth != null"
+          }
+        }
+      },
+
+      "groups": {
+        ".read": true,
+        ".indexOn": ["createdAt"],
+        "$groupId": {
+          ".write": "auth != null"
+        }
+      },
+
+      "group_messages": {
+        "$groupId": {
+          ".read": "auth != null",
+          ".indexOn": ["timestamp"],
+          "$messageId": {
+            ".write": "auth != null"
+          }
+        }
+      }
+    },
+
+    "users": {
+      ".indexOn": ["createdAt"],
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin')"
+      }
+    }
+  }
+}

@@ -52,7 +52,6 @@ fun ReaderScreen(
     val readerState by viewModel.readerState.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val translationState by viewModel.translationState.collectAsState()
-    val configReady by viewModel.configReady.collectAsState()
     val context = LocalContext.current
 
     var showControls by remember { mutableStateOf(false) }
@@ -75,11 +74,10 @@ fun ReaderScreen(
         viewModel.loadBook(bookId)
     }
 
-    // Open initial chapter only after BOTH config AND chapters are ready
-    LaunchedEffect(configReady) {
-        if (configReady && chapter == null) {
-            val c = chapters.getOrNull(initialChapterIndex) ?: chapters.firstOrNull() ?: return@LaunchedEffect
-            android.util.Log.d("Crawler", "ReaderScreen: opening chapter index=$initialChapterIndex title=${c.title}")
+    // Open initial chapter once chapters loaded
+    LaunchedEffect(chapters.size) {
+        if (chapters.isNotEmpty() && chapter == null) {
+            val c = chapters.getOrNull(initialChapterIndex) ?: chapters.first()
             viewModel.openChapter(c)
         }
     }
@@ -95,6 +93,12 @@ fun ReaderScreen(
     }
     DisposableEffect(Unit) {
         onDispose { tts?.shutdown() }
+    }
+
+    LaunchedEffect(translationState) {
+        if (translationState is TranslationState.Done) {
+            showTranslation = true
+        }
     }
 
     // Save progress periodically
@@ -223,11 +227,11 @@ fun ReaderScreen(
                 onNextChapter = { viewModel.navigateChapter(1) },
                 onSeek = { index ->
                     val c = chapters.getOrNull(index)
-                    c?.let { viewModel.openChapter(it) }   // config resolved internally
+                    c?.let { viewModel.openChapter(it) }
                 },
                 onTranslate = {
                     viewModel.translateCurrentChapter()
-                    if (translationState !is TranslationState.Idle) showTranslation = !showTranslation
+                    if (translationState is TranslationState.Done) showTranslation = !showTranslation
                 },
                 onTts = {
                     if (isTtsPlaying) {
@@ -238,6 +242,7 @@ fun ReaderScreen(
                         isTtsPlaying = true
                     }
                 },
+                onChapterList = { showChapterList = true },
                 onSettings = { showSettingsSheet = true }
             )
         }
@@ -271,7 +276,7 @@ fun ReaderScreen(
             chapters = chapters,
             currentIndex = chapter?.chapterIndex ?: 0,
             onSelectChapter = { c ->
-                viewModel.openChapter(c)   // config resolved internally
+                viewModel.openChapter(c)
                 showChapterList = false
             },
             onDismiss = { showChapterList = false }
@@ -328,6 +333,7 @@ fun ReaderBottomBar(
     onSeek: (Int) -> Unit,
     onTranslate: () -> Unit,
     onTts: () -> Unit,
+    onChapterList: () -> Unit,
     onSettings: () -> Unit
 ) {
     Surface(
@@ -363,7 +369,7 @@ fun ReaderBottomBar(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 // Chapter list
-                IconButton(onClick = {}) {
+                IconButton(onClick = onChapterList) {
                     Icon(Icons.Default.FormatListBulleted, "Danh sách")
                 }
                 // TTS

@@ -4,8 +4,6 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.novelreader.data.remote.crawler.CrawlerConfig
-import com.example.novelreader.data.remote.crawler.CrawlerConfigs
 import com.example.novelreader.data.remote.crawler.NovelCrawlerService
 import com.example.novelreader.data.repository.CommunityRepository
 import com.example.novelreader.domain.model.*
@@ -24,6 +22,7 @@ import com.example.novelreader.domain.model.Review
 import kotlinx.coroutines.flow.map
 import com.example.novelreader.data.repository.GroupRepository
 import com.example.novelreader.domain.model.ChatGroup
+import com.example.novelreader.data.remote.crawler.DiscoverFeed
 
 // ============================================================
 // BOOKSHELF VIEW MODEL
@@ -37,7 +36,6 @@ class BookshelfViewModel @Inject constructor(
     val books: StateFlow<List<Book>> = bookRepo.getAllBooks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Map bookId -> ReadingHistory for progress display
     private val _progressMap = MutableStateFlow<Map<String, ReadingHistory>>(emptyMap())
     val progressMap: StateFlow<Map<String, ReadingHistory>> = _progressMap.asStateFlow()
 
@@ -45,7 +43,6 @@ class BookshelfViewModel @Inject constructor(
     val uiState: StateFlow<BookshelfUiState> = _uiState.asStateFlow()
 
     init {
-        // Collect reading progress for all books
         viewModelScope.launch {
             books.collectLatest { bookList ->
                 val map = bookList.associate { book ->
@@ -67,7 +64,6 @@ class BookshelfViewModel @Inject constructor(
             bookRepo.importTxtFile(rawText, title, customRegex)
                 .onSuccess {
                     _uiState.value = BookshelfUiState.ImportSuccess(it)
-                    // Reset về Idle sau 100ms để lần import tiếp theo vẫn trigger LaunchedEffect
                     kotlinx.coroutines.delay(100)
                     _uiState.value = BookshelfUiState.Idle
                 }
@@ -99,20 +95,22 @@ class DiscoverViewModel @Inject constructor(
     private val _novels = MutableStateFlow<List<Book>>(emptyList())
     val novels: StateFlow<List<Book>> = _novels.asStateFlow()
 
+    private val _selectedFeed = MutableStateFlow(DiscoverFeed.QIDIAN_WEEK)
+    val selectedFeed: StateFlow<DiscoverFeed> = _selectedFeed.asStateFlow()
+
     private val _detailState = MutableStateFlow<DetailUiState>(DetailUiState.Idle)
     val detailState: StateFlow<DetailUiState> = _detailState.asStateFlow()
+
+    private val _detailActionState = MutableStateFlow<DetailActionState>(DetailActionState.Idle)
+    val detailActionState: StateFlow<DetailActionState> = _detailActionState.asStateFlow()
 
     private val _uiState = MutableStateFlow<DiscoverUiState>(DiscoverUiState.Idle)
     val uiState: StateFlow<DiscoverUiState> = _uiState.asStateFlow()
 
-    // Currently selected crawler config
-    var currentConfig: CrawlerConfig = CrawlerConfigs.SIX_NINE_HSW
-
-    fun loadNovels(pageUrl: String = CrawlerConfigs.SIX_NINE_HSW.homeUrl) {
+    fun loadNovels(page: Int = 1) {
         viewModelScope.launch {
             _uiState.value = DiscoverUiState.Loading
-            currentConfig = CrawlerConfigs.SIX_NINE_HSW
-            crawler.discoverNovels(pageUrl, currentConfig)
+            crawler.discoverNovels(page = page, feed = _selectedFeed.value)
                 .onSuccess {
                     _novels.value = it
                     _uiState.value = DiscoverUiState.Success
@@ -123,10 +121,17 @@ class DiscoverViewModel @Inject constructor(
         }
     }
 
+    fun selectFeed(feed: DiscoverFeed) {
+        if (_selectedFeed.value == feed) return
+        _selectedFeed.value = feed
+        _searchQuery.value = ""
+        loadNovels()
+    }
+
     fun loadNovelDetail(detailUrl: String) {
         viewModelScope.launch {
             _detailState.value = DetailUiState.Loading
-            crawler.fetchNovelDetail(detailUrl, currentConfig)
+            crawler.fetchNovelDetail(detailUrl)
                 .onSuccess { (book, chapters) ->
                     _detailState.value = DetailUiState.Success(book, chapters)
                 }
@@ -137,13 +142,28 @@ class DiscoverViewModel @Inject constructor(
     }
 
     fun addToBookshelf(detailUrl: String) = viewModelScope.launch {
-        bookRepo.crawlAndSaveNovel(detailUrl, currentConfig)
+        _detailActionState.value = DetailActionState.Loading
+        val existing = bookRepo.getBookBySourceUrl(detailUrl)
+        if (existing != null) {
+            _detailActionState.value = DetailActionState.Added(existing, alreadyInShelf = true)
+            return@launch
+        }
+
+        bookRepo.crawlAndSaveNovel(detailUrl)
+            .onSuccess { _detailActionState.value = DetailActionState.Added(it) }
+            .onFailure {
+                _detailActionState.value =
+                    DetailActionState.Error(it.message ?: "Không thể thêm truyện vào kệ sách")
+            }
+    }
+
+    fun clearDetailActionState() {
+        _detailActionState.value = DetailActionState.Idle
     }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    // Local filter on already-loaded novels (instant feedback while typing)
     val filteredNovels: StateFlow<List<Book>> = combine(_novels, _searchQuery) { list, query ->
         if (query.isBlank()) list
         else list.filter {
@@ -158,10 +178,6 @@ class DiscoverViewModel @Inject constructor(
         _searchQuery.value = query
     }
 
-    /**
-     * Performs a remote search on the configured site.
-     * Call this when the user submits the search (keyboard Done / search button).
-     */
     fun searchRemote(query: String) {
         if (query.isBlank()) {
             loadNovels()
@@ -170,7 +186,7 @@ class DiscoverViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _uiState.value = DiscoverUiState.Loading
-            crawler.searchNovels(query, currentConfig)
+            crawler.searchNovels(query)
                 .onSuccess {
                     _novels.value = it
                     _uiState.value = DiscoverUiState.Success
@@ -196,17 +212,16 @@ sealed class DetailUiState {
     data class Error(val message: String) : DetailUiState()
 }
 
+sealed class DetailActionState {
+    object Idle : DetailActionState()
+    object Loading : DetailActionState()
+    data class Added(val book: Book, val alreadyInShelf: Boolean = false) : DetailActionState()
+    data class Error(val message: String) : DetailActionState()
+}
+
 // ============================================================
 // READER VIEW MODEL
 // ============================================================
-
-/** Resolve the correct CrawlerConfig based on the book's sourceUrl. */
-fun configForBook(sourceUrl: String): CrawlerConfig? = when {
-    sourceUrl.contains("69hsw.com")           -> CrawlerConfigs.SIX_NINE_HSW
-    sourceUrl.contains("truyenfull.io")       -> CrawlerConfigs.TRUYEN_FULL
-    sourceUrl.contains("tangthuvien.vn")      -> CrawlerConfigs.TANG_THU_VIEN
-    else                                      -> null
-}
 
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
@@ -224,20 +239,12 @@ class ReaderViewModel @Inject constructor(
     private val _readerState = MutableStateFlow<ReaderUiState>(ReaderUiState.Idle)
     val readerState: StateFlow<ReaderUiState> = _readerState.asStateFlow()
 
-    // Resolved once when loadBook() is called; used for all chapter fetches
-    private var crawlerConfig: CrawlerConfig? = null
-
-    // Emits true once crawlerConfig + first chapter batch are both ready
-    private val _configReady = MutableStateFlow(false)
-    val configReady: StateFlow<Boolean> = _configReady.asStateFlow()
-
     private val _settings = MutableStateFlow(ReaderSettings())
     val settings: StateFlow<ReaderSettings> = _settings.asStateFlow()
 
     private val _translationState = MutableStateFlow<TranslationState>(TranslationState.Idle)
     val translationState: StateFlow<TranslationState> = _translationState.asStateFlow()
 
-    // Companion keys for DataStore
     companion object {
         val FONT_SIZE = floatPreferencesKey("font_size")
         val FONT_FAMILY = stringPreferencesKey("font_family")
@@ -249,7 +256,6 @@ class ReaderViewModel @Inject constructor(
     }
 
     init {
-        // Load settings from DataStore
         viewModelScope.launch {
             dataStore.data.collect { prefs ->
                 _settings.value = ReaderSettings(
@@ -266,30 +272,15 @@ class ReaderViewModel @Inject constructor(
     }
 
     fun loadBook(bookId: String) {
-        // Coroutine 1: resolve crawler config from book metadata, then signal ready
         viewModelScope.launch {
-            val book = bookRepo.getBookById(bookId)
-            if (book != null) {
-                crawlerConfig = configForBook(book.sourceUrl)
-                android.util.Log.d("Crawler", "loadBook: source=${book.source} sourceUrl=${book.sourceUrl} config=${crawlerConfig?.baseUrl}")
-            }
-            // Wait until chapters have been emitted, then signal ready
-            _chapters.first { it.isNotEmpty() }
-            _configReady.value = true
-        }
-        // Coroutine 2: stream chapters from DB (suspend forever — must be separate)
-        viewModelScope.launch {
-            chapterRepo.getChaptersByBook(bookId).collect { list ->
-                _chapters.value = list
-            }
+            chapterRepo.getChaptersByBook(bookId).collect { _chapters.value = it }
         }
     }
 
-    fun openChapter(chapter: Chapter, externalConfig: CrawlerConfig? = null) {
-        val config = externalConfig ?: crawlerConfig
+    fun openChapter(chapter: Chapter) {
         viewModelScope.launch {
             _readerState.value = ReaderUiState.Loading
-            chapterRepo.ensureContentLoaded(chapter, config)
+            chapterRepo.ensureContentLoaded(chapter)
                 .onSuccess {
                     _currentChapter.value = it
                     _readerState.value = ReaderUiState.Ready
@@ -316,7 +307,6 @@ class ReaderViewModel @Inject constructor(
             return
         }
 
-        // If already translated, just show it
         if (chapter.translatedContent.isNotBlank()) {
             _translationState.value = TranslationState.Done(chapter.translatedContent)
             return
@@ -348,29 +338,13 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun updateFontSize(size: Float) = viewModelScope.launch {
-        dataStore.edit { it[FONT_SIZE] = size }
-    }
+    fun updateFontSize(size: Float) = viewModelScope.launch { dataStore.edit { it[FONT_SIZE] = size } }
+    fun updateFontFamily(family: String) = viewModelScope.launch { dataStore.edit { it[FONT_FAMILY] = family } }
+    fun updateBackground(bg: ReaderBackground) = viewModelScope.launch { dataStore.edit { it[BG_COLOR] = bg.name } }
+    fun updateDarkMode(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[IS_DARK_MODE] = enabled } }
+    fun updateApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[GEMINI_API_KEY] = key } }
+    fun updateTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[TRANSLATION_PROMPT] = prompt } }
 
-    fun updateFontFamily(family: String) = viewModelScope.launch {
-        dataStore.edit { it[FONT_FAMILY] = family }
-    }
-
-    fun updateBackground(bg: ReaderBackground) = viewModelScope.launch {
-        dataStore.edit { it[BG_COLOR] = bg.name }
-    }
-
-    fun updateDarkMode(enabled: Boolean) = viewModelScope.launch {
-        dataStore.edit { it[IS_DARK_MODE] = enabled }
-    }
-
-    fun updateApiKey(key: String) = viewModelScope.launch {
-        dataStore.edit { it[GEMINI_API_KEY] = key }
-    }
-
-    fun updateTranslationPrompt(prompt: String) = viewModelScope.launch {
-        dataStore.edit { it[TRANSLATION_PROMPT] = prompt }
-    }
     fun toggleBookmark() {
         val chapter = _currentChapter.value ?: return
         viewModelScope.launch {
@@ -379,9 +353,8 @@ class ReaderViewModel @Inject constructor(
             _currentChapter.value = chapter.copy(isBookmarked = newState)
         }
     }
-    fun getShareLink(bookId: String): String {
-        return "https://novelreader.app/story/$bookId"
-    }
+
+    fun getShareLink(bookId: String): String = "https://novelreader.app/story/$bookId"
 }
 
 sealed class ReaderUiState {
@@ -438,6 +411,27 @@ class CommunityViewModel @Inject constructor(
 
     fun likePrompt(promptId: String) = viewModelScope.launch {
         communityRepo.likePrompt(promptId)
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi đánh giá prompt") }
+    }
+
+    // --- Xóa nội dung (chủ bài hoặc Mod/Admin) ---
+
+    fun deleteChatMessage(messageId: String) = viewModelScope.launch {
+        communityRepo.deleteChatMessage(messageId)
+            .onSuccess { _actionState.value = CommunityActionState.Success("Đã xóa tin nhắn") }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi xóa tin nhắn") }
+    }
+
+    fun deletePrompt(promptId: String) = viewModelScope.launch {
+        communityRepo.deletePrompt(promptId)
+            .onSuccess { _actionState.value = CommunityActionState.Success("Đã xóa bài viết") }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi xóa bài viết") }
+    }
+
+    fun deleteSharedNovel(novelId: String) = viewModelScope.launch {
+        communityRepo.deleteSharedNovel(novelId)
+            .onSuccess { _actionState.value = CommunityActionState.Success("Đã xóa truyện chia sẻ") }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi xóa truyện") }
     }
 
     fun shareNovel(title: String, fileBytes: ByteArray) = viewModelScope.launch {
@@ -446,24 +440,19 @@ class CommunityViewModel @Inject constructor(
             .onSuccess { _actionState.value = CommunityActionState.Success("Chia sẻ thành công!") }
             .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi chia sẻ") }
     }
+
     fun downloadAndImport(novel: SharedNovel) = viewModelScope.launch {
         _actionState.value = CommunityActionState.Loading
-        runCatching {
-            // Tải file từ URL về
-            val url = java.net.URL(novel.fileUrl)
-            val bytes = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                url.readBytes()
+        // Lấy nội dung từ RTDB (không dùng Storage URL nữa)
+        communityRepo.fetchSharedNovelContent(novel.fileUrl)
+            .mapCatching { text ->
+                bookRepo.importTxtFile(text, novel.title, null).getOrThrow()
             }
-            val text = bytes.toString(Charsets.UTF_8)
-            // Import vào kệ sách
-            bookRepo.importTxtFile(text, novel.title, null).getOrThrow()
-        }
             .onSuccess {
+                communityRepo.incrementSharedNovelDownload(novel.id)
                 _actionState.value = CommunityActionState.Success("Đã thêm \"${novel.title}\" vào kệ sách!")
             }
-            .onFailure {
-                _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi tải truyện")
-            }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi tải truyện") }
     }
 
     fun clearActionState() { _actionState.value = CommunityActionState.Idle }
@@ -491,47 +480,65 @@ class ProfileViewModel @Inject constructor(
 
     val isLoggedIn: Boolean get() = communityRepo.isLoggedIn
 
+    private val _currentUser = MutableStateFlow<User?>(null)
+    val currentUser: StateFlow<User?> = _currentUser.asStateFlow()
+
     private val _settings = MutableStateFlow(ReaderSettings())
     val settings: StateFlow<ReaderSettings> = _settings.asStateFlow()
+
+    private val _profileAction = MutableStateFlow<ProfileActionState>(ProfileActionState.Idle)
+    val profileAction: StateFlow<ProfileActionState> = _profileAction.asStateFlow()
 
     init {
         viewModelScope.launch {
             dataStore.data.collect { prefs ->
                 _settings.value = _settings.value.copy(
-                    geminiApiKey = prefs[ReaderViewModel.GEMINI_API_KEY] ?: "",
+                    geminiApiKey      = prefs[ReaderViewModel.GEMINI_API_KEY] ?: "",
                     translationPrompt = prefs[ReaderViewModel.TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
-                    fontSize = prefs[ReaderViewModel.FONT_SIZE] ?: 18f,
-                    fontFamily = prefs[ReaderViewModel.FONT_FAMILY] ?: "default",
-                    isDarkMode = prefs[ReaderViewModel.IS_DARK_MODE] ?: false
+                    fontSize          = prefs[ReaderViewModel.FONT_SIZE] ?: 18f,
+                    fontFamily        = prefs[ReaderViewModel.FONT_FAMILY] ?: "default",
+                    isDarkMode        = prefs[ReaderViewModel.IS_DARK_MODE] ?: false
                 )
             }
         }
+        // Load user data nếu đã đăng nhập
+        if (isLoggedIn) refreshCurrentUser()
+    }
+
+    fun refreshCurrentUser() = viewModelScope.launch {
+        val user = communityRepo.fetchCurrentUser()
+        _currentUser.value = user
+        if (user != null) _authState.value = AuthState.LoggedIn(user)
     }
 
     fun signUp(name: String, email: String, password: String) = viewModelScope.launch {
         _authState.value = AuthState.Loading
         communityRepo.signUp(name, email, password)
-            .onSuccess { _authState.value = AuthState.LoggedIn(it) }
+            .onSuccess { user ->
+                _currentUser.value = user
+                _authState.value = AuthState.LoggedIn(user)
+            }
             .onFailure { _authState.value = AuthState.Error(it.message ?: "Đăng ký thất bại") }
     }
 
     fun signIn(email: String, password: String) = viewModelScope.launch {
         _authState.value = AuthState.Loading
         communityRepo.signIn(email, password)
-            .onSuccess { _authState.value = AuthState.LoggedIn(it) }
+            .onSuccess { user ->
+                _currentUser.value = user
+                _authState.value = AuthState.LoggedIn(user)
+            }
             .onFailure { _authState.value = AuthState.Error(it.message ?: "Đăng nhập thất bại") }
     }
 
     fun signOut() = viewModelScope.launch {
         communityRepo.signOut()
+        _currentUser.value = null
         _authState.value = AuthState.LoggedOut
     }
 
     fun resetPassword(email: String) = viewModelScope.launch {
-        if (email.isBlank()) {
-            _authState.value = AuthState.Error("Vui lòng nhập email")
-            return@launch
-        }
+        if (email.isBlank()) { _authState.value = AuthState.Error("Vui lòng nhập email"); return@launch }
         _authState.value = AuthState.Loading
         try {
             communityRepo.auth.sendPasswordResetEmail(email).await()
@@ -541,13 +548,109 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    fun saveApiKey(key: String) = viewModelScope.launch {
-        dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key }
+
+
+
+
+
+    fun updateProfile(name: String, avatarUrl: String = "") = viewModelScope.launch {
+        if (name.isBlank()) { _profileAction.value = ProfileActionState.Error("Tên không được trống"); return@launch }
+        _profileAction.value = ProfileActionState.Loading
+        communityRepo.updateProfile(name, avatarUrl)
+            .onSuccess {
+                _currentUser.value = _currentUser.value?.copy(name = name.trim())
+                _profileAction.value = ProfileActionState.Success("Đã cập nhật thông tin")
+                kotlinx.coroutines.delay(100)
+                _profileAction.value = ProfileActionState.Idle
+            }
+            .onFailure {
+                _profileAction.value = ProfileActionState.Error(it.message ?: "Cập nhật thất bại")
+                kotlinx.coroutines.delay(100)
+                _profileAction.value = ProfileActionState.Idle
+            }
     }
 
-    fun saveTranslationPrompt(prompt: String) = viewModelScope.launch {
-        dataStore.edit { it[ReaderViewModel.TRANSLATION_PROMPT] = prompt }
+    fun saveApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key } }
+    fun saveTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.TRANSLATION_PROMPT] = prompt } }
+}
+
+sealed class ProfileActionState {
+    object Idle : ProfileActionState()
+    object Loading : ProfileActionState()
+    data class Success(val message: String) : ProfileActionState()
+    data class Error(val message: String) : ProfileActionState()
+}
+
+// ============================================================
+// ADMIN VIEW MODEL — Quản lý người dùng (Mod / Admin)
+// ============================================================
+
+@HiltViewModel
+class AdminViewModel @Inject constructor(
+    private val communityRepo: CommunityRepository
+) : ViewModel() {
+
+    val users: StateFlow<List<UserSummary>> = communityRepo.getAllUsers()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _actionState = MutableStateFlow<AdminActionState>(AdminActionState.Idle)
+    val actionState: StateFlow<AdminActionState> = _actionState.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    val filteredUsers: StateFlow<List<UserSummary>> = combine(users, _searchQuery) { list, q ->
+        if (q.isBlank()) list
+        else list.filter {
+            it.name.contains(q, ignoreCase = true) ||
+            it.email.contains(q, ignoreCase = true) ||
+            it.role.contains(q, ignoreCase = true)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun onSearchQueryChange(q: String) { _searchQuery.value = q }
+
+    /** Ban tạm thời hoặc vĩnh viễn (durationHours = 0 → vĩnh viễn) */
+    fun banUser(targetUid: String, reason: String, durationHours: Long = 0L) = viewModelScope.launch {
+        if (reason.isBlank()) { _actionState.value = AdminActionState.Error("Vui lòng nhập lý do"); return@launch }
+        _actionState.value = AdminActionState.Loading
+        communityRepo.banUser(targetUid, reason, durationHours)
+            .onSuccess {
+                val label = if (durationHours == 0L) "vĩnh viễn" else "${durationHours}h"
+                _actionState.value = AdminActionState.Success("Đã khóa tài khoản ($label)")
+            }
+            .onFailure { _actionState.value = AdminActionState.Error(it.message ?: "Khóa thất bại") }
     }
+
+    fun unbanUser(targetUid: String) = viewModelScope.launch {
+        _actionState.value = AdminActionState.Loading
+        communityRepo.unbanUser(targetUid)
+            .onSuccess { _actionState.value = AdminActionState.Success("Đã mở khóa tài khoản") }
+            .onFailure { _actionState.value = AdminActionState.Error(it.message ?: "Mở khóa thất bại") }
+    }
+
+    fun promoteToMod(targetUid: String) = viewModelScope.launch {
+        _actionState.value = AdminActionState.Loading
+        communityRepo.promoteToMod(targetUid)
+            .onSuccess { _actionState.value = AdminActionState.Success("Đã thăng cấp lên Mod") }
+            .onFailure { _actionState.value = AdminActionState.Error(it.message ?: "Thăng cấp thất bại") }
+    }
+
+    fun demoteToUser(targetUid: String) = viewModelScope.launch {
+        _actionState.value = AdminActionState.Loading
+        communityRepo.demoteToUser(targetUid)
+            .onSuccess { _actionState.value = AdminActionState.Success("Đã hạ về Người dùng") }
+            .onFailure { _actionState.value = AdminActionState.Error(it.message ?: "Hạ cấp thất bại") }
+    }
+
+    fun clearActionState() { _actionState.value = AdminActionState.Idle }
+}
+
+sealed class AdminActionState {
+    object Idle : AdminActionState()
+    object Loading : AdminActionState()
+    data class Success(val message: String) : AdminActionState()
+    data class Error(val message: String) : AdminActionState()
 }
 
 sealed class AuthState {
@@ -581,9 +684,7 @@ class BookDetailViewModel @Inject constructor(
     fun loadBook(bookId: String) {
         viewModelScope.launch {
             _book.value = bookRepo.getBookById(bookId)
-            chapterRepo.getChaptersByBook(bookId).collect {
-                _chapters.value = it
-            }
+            chapterRepo.getChaptersByBook(bookId).collect { _chapters.value = it }
         }
     }
 
@@ -605,6 +706,10 @@ sealed class SaveState {
     object Saved : SaveState()
     data class Error(val message: String) : SaveState()
 }
+
+// ============================================================
+// REVIEW VIEW MODEL
+// ============================================================
 
 @HiltViewModel
 class ReviewViewModel @Inject constructor(
@@ -635,12 +740,8 @@ class ReviewViewModel @Inject constructor(
         currentBookKey = bookKey
         currentBookId = bookId
         currentSourceUrl = sourceUrl
-        viewModelScope.launch {
-            reviewRepo.getReviews(bookKey).collect { _reviews.value = it }
-        }
-        viewModelScope.launch {
-            if (isLoggedIn) _myReview.value = reviewRepo.getMyReview(bookKey)
-        }
+        viewModelScope.launch { reviewRepo.getReviews(bookKey).collect { _reviews.value = it } }
+        viewModelScope.launch { if (isLoggedIn) _myReview.value = reviewRepo.getMyReview(bookKey) }
     }
 
     fun submitReview(rating: Int, comment: String) {
@@ -666,6 +767,10 @@ sealed class ReviewUiState {
     data class Error(val message: String) : ReviewUiState()
 }
 
+// ============================================================
+// GROUP VIEW MODEL
+// ============================================================
+
 @HiltViewModel
 class GroupViewModel @Inject constructor(
     private val groupRepo: GroupRepository
@@ -687,16 +792,12 @@ class GroupViewModel @Inject constructor(
     val isLoggedIn: Boolean get() = groupRepo.isLoggedIn
 
     init {
-        viewModelScope.launch {
-            groupRepo.getGroups().collect { _groups.value = it }
-        }
+        viewModelScope.launch { groupRepo.getGroups().collect { _groups.value = it } }
     }
 
     fun openGroup(group: ChatGroup) {
         _currentGroup.value = group
-        viewModelScope.launch {
-            groupRepo.getMessages(group.id).collect { _messages.value = it }
-        }
+        viewModelScope.launch { groupRepo.getMessages(group.id).collect { _messages.value = it } }
     }
 
     fun createGroup(name: String, description: String) = viewModelScope.launch {

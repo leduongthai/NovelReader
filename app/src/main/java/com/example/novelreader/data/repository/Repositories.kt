@@ -6,7 +6,6 @@ import com.example.novelreader.data.local.entity.*
 import com.example.novelreader.data.remote.api.GeminiTranslationService
 import com.example.novelreader.data.remote.crawler.NovelCrawlerService
 import com.example.novelreader.data.remote.crawler.TxtChapterParser
-import com.example.novelreader.data.remote.crawler.CrawlerConfig
 import com.example.novelreader.domain.model.*
 import com.example.novelreader.domain.repository.BookRepository
 import com.example.novelreader.domain.repository.ChapterRepository
@@ -35,6 +34,9 @@ class BookRepositoryImpl @Inject constructor(
     override suspend fun getBookById(id: String): Book? =
         bookDao.getBookById(id)?.toDomain()
 
+    override suspend fun getBookBySourceUrl(sourceUrl: String): Book? =
+        bookDao.getBookBySourceUrl(sourceUrl)?.toDomain()
+
     override suspend fun addBook(book: Book) =
         bookDao.insertBook(book.toEntity())
 
@@ -54,20 +56,17 @@ class BookRepositoryImpl @Inject constructor(
     override suspend fun updateReadingProgress(history: ReadingHistory) =
         historyDao.upsertHistory(history.toEntity())
 
-    /** Crawl a novel's detail page and save book + stub chapters to DB */
-    override suspend fun crawlAndSaveNovel(
-        detailUrl: String,
-        config: CrawlerConfig
-    ): Result<Book> {
-        val result = crawler.fetchNovelDetail(detailUrl, config)
-        return result.map { (book, chapters) ->
-            bookDao.insertBook(book.toEntity())
+    /** Crawl trang chi tiết truyện, lưu Book + stub Chapter vào DB */
+    override suspend fun crawlAndSaveNovel(detailUrl: String): Result<Book> {
+        return crawler.fetchNovelDetail(detailUrl).map { (book, chapters) ->
+            val savedBook = book.copy(totalChapters = chapters.size)
+            bookDao.insertBook(savedBook.toEntity())
             chapterDao.insertChapters(chapters.map { it.toEntity() })
-            book
+            savedBook
         }
     }
 
-    /** Import a TXT file: parse chapters and save — runs on IO dispatcher */
+    /** Import file TXT: parse chương rồi lưu vào DB */
     override suspend fun importTxtFile(
         rawText: String,
         bookTitle: String,
@@ -84,7 +83,7 @@ class BookRepositoryImpl @Inject constructor(
             val chapters = parser.parse(rawText, bookId, regex)
 
             bookDao.insertBook(book.copy(totalChapters = chapters.size).toEntity())
-            // Chia batch để tránh transaction quá lớn với file nhiều chương
+            // Chia batch tránh transaction quá lớn với file nhiều chương
             chapters.chunked(200).forEach { batch ->
                 chapterDao.insertChapters(batch.map { it.toEntity() })
             }
@@ -115,18 +114,15 @@ class ChapterRepositoryImpl @Inject constructor(
         chapterDao.getChapterByIndex(bookId, index)?.toDomain()
 
     /**
-     * Ensures chapter content is loaded. If not yet fetched from web, crawl it.
+     * Đảm bảo nội dung chương đã được tải. Nếu chưa có thì crawl từ sourceUrl.
+     * NovelCrawlerService tự phát hiện nguồn qua detectSource().
      */
-    override suspend fun ensureContentLoaded(
-        chapter: Chapter,
-        config: CrawlerConfig?
-    ): Result<Chapter> {
-        Log.d("Crawler", "ensureContentLoaded id=${chapter.id} isLoaded=${chapter.isLoaded} sourceUrl=${chapter.sourceUrl} config=${config?.baseUrl}")
+    override suspend fun ensureContentLoaded(chapter: Chapter): Result<Chapter> {
+        Log.d("Crawler", "ensureContentLoaded id=${chapter.id} isLoaded=${chapter.isLoaded} sourceUrl=${chapter.sourceUrl}")
         if (chapter.isLoaded) return Result.success(chapter)
         if (chapter.sourceUrl.isBlank()) return Result.failure(Exception("No source URL"))
-        if (config == null) return Result.failure(Exception("No crawler config"))
 
-        return crawler.fetchChapterContent(chapter.sourceUrl, config).map { content ->
+        return crawler.fetchChapterContent(chapter.sourceUrl).map { content ->
             Log.d("Crawler", "ensureContentLoaded fetched ${content.length} chars")
             chapterDao.updateContent(chapter.id, content)
             chapter.copy(content = content, isLoaded = true)
@@ -135,9 +131,7 @@ class ChapterRepositoryImpl @Inject constructor(
         }
     }
 
-    /**
-     * Translates the chapter using Gemini and caches the result in DB.
-     */
+    /** Dịch chương bằng Gemini và cache kết quả vào DB */
     override suspend fun translateChapter(
         chapter: Chapter,
         prompt: String,
@@ -148,10 +142,10 @@ class ChapterRepositoryImpl @Inject constructor(
                 chapterDao.updateTranslation(chapter.id, translation)
             }
     }
+
     override suspend fun toggleBookmark(chapterId: String, bookmarked: Boolean) {
         chapterDao.updateBookmark(chapterId, bookmarked)
     }
-
 }
 
 // ============================================================

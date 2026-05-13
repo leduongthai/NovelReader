@@ -1,5 +1,6 @@
 package com.example.novelreader.data.repository
 
+import android.util.Log
 import com.example.novelreader.domain.model.ChatGroup
 import com.example.novelreader.domain.model.ChatMessage
 import com.google.firebase.auth.FirebaseAuth
@@ -45,7 +46,9 @@ class GroupRepository @Inject constructor(
 
     suspend fun createGroup(name: String, description: String): Result<ChatGroup> = runCatching {
         val user = auth.currentUser ?: throw Exception("Bạn cần đăng nhập")
+        Log.d("GroupRepo", "createGroup: uid=${user.uid} name=$name")
         val id = UUID.randomUUID().toString()
+        Log.d("GroupRepo", "createGroup: writing to RTDB path=community/groups/$id")
         val group = ChatGroup(
             id = id,
             name = name.trim(),
@@ -56,6 +59,7 @@ class GroupRepository @Inject constructor(
         )
         database.reference.child(GROUPS_NODE).child(id)
             .setValue(group.toFirebaseMap()).await()
+        Log.d("GroupRepo", "createGroup: SUCCESS")
         group
     }
 

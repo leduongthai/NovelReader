@@ -95,6 +95,10 @@ fun BookshelfScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var pendingImportTitle by remember { mutableStateOf("") }
+    var pendingImportText by remember { mutableStateOf("") }
 
     // Chọn file → đọc trên IO thread → import
     val fileLauncher = rememberLauncherForActivityResult(
@@ -109,7 +113,9 @@ fun BookshelfScreen(
                 snackbarHostState.showSnackbar("Không đọc được file. Thử file TXT khác.")
                 return@launch
             }
-            viewModel.importTxtFile(text, fileName, customRegex = null)
+            pendingImportTitle = fileName
+            pendingImportText = text
+            showImportDialog = true
         }
     }
 
@@ -132,10 +138,21 @@ fun BookshelfScreen(
             TopAppBar(
                 title = { Text("Kệ sách", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = {
-                        fileLauncher.launch(arrayOf("text/plain", "text/*", "*/*"))
-                    }) {
-                        Icon(Icons.Default.Add, "Nhập file TXT")
+                    IconButton(onClick = { showTopMenu = true }) {
+                        Icon(Icons.Default.MoreVert, "Thêm truyện")
+                    }
+                    DropdownMenu(
+                        expanded = showTopMenu,
+                        onDismissRequest = { showTopMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Nhập file TXT") },
+                            leadingIcon = { Icon(Icons.Default.Upload, null) },
+                            onClick = {
+                                showTopMenu = false
+                                fileLauncher.launch(arrayOf("text/plain", "text/*", "*/*"))
+                            }
+                        )
                     }
                 }
             )
@@ -188,7 +205,7 @@ fun BookshelfScreen(
                             Text("Kệ sách trống", fontSize = 16.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(4.dp))
-                            Text("Nhấn + để nhập file TXT", fontSize = 13.sp,
+                            Text("Nhấn nút ba chấm để nhập file TXT", fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.outline)
                         }
                     }
@@ -206,6 +223,26 @@ fun BookshelfScreen(
                 )
             }
         }
+    }
+
+    if (showImportDialog) {
+        ImportTxtDialog(
+            title = pendingImportTitle,
+            onTitleChange = { pendingImportTitle = it },
+            onImport = { customRegex ->
+                viewModel.importTxtFile(
+                    rawText = pendingImportText,
+                    title = pendingImportTitle.ifBlank { "Truyện không tên" },
+                    customRegex = customRegex
+                )
+                showImportDialog = false
+                pendingImportText = ""
+            },
+            onDismiss = {
+                showImportDialog = false
+                pendingImportText = ""
+            }
+        )
     }
 }
 
@@ -310,4 +347,79 @@ fun BookGridItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+@Composable
+fun ImportTxtDialog(
+    title: String,
+    onTitleChange: (String) -> Unit,
+    onImport: (customRegex: String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var useCustomRegex by remember { mutableStateOf(false) }
+    var customRegex by remember {
+        mutableStateOf("""^[ 　\t]{0,4}(?:[Cc]hương|[Cc]hapter|[Ss]ection|[Pp]art|[Pp]hần|[Nn][Oo]\.|[Ee]pisode)\s{0,4}\d{1,4}.{0,40}$""")
+    }
+    var regexError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nhập truyện TXT") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = onTitleChange,
+                    label = { Text("Tên truyện") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = useCustomRegex,
+                        onCheckedChange = {
+                            useCustomRegex = it
+                            regexError = null
+                        }
+                    )
+                    Text("Tự nhập biểu thức chia chương")
+                }
+                if (useCustomRegex) {
+                    OutlinedTextField(
+                        value = customRegex,
+                        onValueChange = {
+                            customRegex = it
+                            regexError = null
+                        },
+                        label = { Text("Regex tiêu đề chương") },
+                        minLines = 3,
+                        maxLines = 5,
+                        isError = regexError != null,
+                        supportingText = {
+                            Text(regexError ?: "Để trống lựa chọn này nếu muốn dùng mẫu mặc định.")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val regex = if (useCustomRegex) customRegex.trim().ifBlank { null } else null
+                    if (regex != null && runCatching { Regex(regex, setOf(RegexOption.MULTILINE)) }.isFailure) {
+                        regexError = "Regex không hợp lệ"
+                    } else {
+                        onImport(regex)
+                    }
+                },
+                enabled = title.isNotBlank()
+            ) {
+                Text("Nhập")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Hủy") }
+        }
+    )
 }

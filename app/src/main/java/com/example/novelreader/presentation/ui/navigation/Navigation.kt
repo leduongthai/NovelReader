@@ -104,8 +104,8 @@ fun AppNavHost(
             NovelDetailScreen(
                 detailUrl = url,
                 onBack = { navController.popBackStack() },
-                onOpenReader = { bookId ->
-                    navController.navigate(Screen.Reader.createRoute(bookId))
+                onOpenReader = { bookId, chapterIndex ->
+                    navController.navigate(Screen.Reader.createRoute(bookId, chapterIndex))
                 }
             )
         }

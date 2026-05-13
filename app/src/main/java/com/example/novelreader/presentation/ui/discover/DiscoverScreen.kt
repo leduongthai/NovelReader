@@ -23,8 +23,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.example.novelreader.data.remote.crawler.DiscoverFeed
 import com.example.novelreader.domain.model.Book
 import com.example.novelreader.domain.model.Chapter
+import com.example.novelreader.presentation.viewmodel.DetailActionState
 import com.example.novelreader.presentation.viewmodel.DetailUiState
 import com.example.novelreader.presentation.viewmodel.DiscoverUiState
 import com.example.novelreader.presentation.viewmodel.DiscoverViewModel
@@ -51,6 +53,7 @@ fun DiscoverScreen(
     val novels by viewModel.filteredNovels.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val selectedFeed by viewModel.selectedFeed.collectAsState()
 
     LaunchedEffect(Unit) {
         if (novels.isEmpty()) viewModel.loadNovels()
@@ -89,6 +92,22 @@ fun DiscoverScreen(
                 singleLine = true,
                 shape = RoundedCornerShape(24.dp)
             )
+
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(DiscoverFeed.entries) { feed ->
+                    FilterChip(
+                        selected = selectedFeed == feed,
+                        onClick = { viewModel.selectFeed(feed) },
+                        label = { Text(feed.title) },
+                        leadingIcon = if (selectedFeed == feed) {
+                            { Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp)) }
+                        } else null
+                    )
+                }
+            }
 
             // Nội dung
             when (uiState) {
@@ -200,16 +219,46 @@ fun DiscoverBookCard(book: Book, onClick: () -> Unit) {
 fun NovelDetailScreen(
     detailUrl: String,
     onBack: () -> Unit,
-    onOpenReader: (bookId: String) -> Unit,
+    onOpenReader: (bookId: String, chapterIndex: Int) -> Unit,
     viewModel: DiscoverViewModel = hiltViewModel()
 ) {
     val detailState by viewModel.detailState.collectAsState()
+    val detailActionState by viewModel.detailActionState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    var openAfterAddChapter by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(detailUrl) {
         viewModel.loadNovelDetail(detailUrl)
     }
 
+    LaunchedEffect(detailActionState) {
+        when (val state = detailActionState) {
+            is DetailActionState.Added -> {
+                val chapterIndex = openAfterAddChapter
+                if (chapterIndex != null) {
+                    onOpenReader(state.book.id, chapterIndex)
+                } else {
+                    val message = if (state.alreadyInShelf) {
+                        "Truyện đã có trong kệ sách"
+                    } else {
+                        "Đã thêm \"${state.book.title}\" vào kệ sách"
+                    }
+                    snackbarHostState.showSnackbar(message)
+                }
+                openAfterAddChapter = null
+                viewModel.clearDetailActionState()
+            }
+            is DetailActionState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                openAfterAddChapter = null
+                viewModel.clearDetailActionState()
+            }
+            else -> Unit
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Chi tiết truyện") },
@@ -235,11 +284,18 @@ fun NovelDetailScreen(
                     book = state.book,
                     chapters = state.chapters,
                     modifier = Modifier.padding(padding),
+                    isSaving = detailActionState is DetailActionState.Loading,
                     onAddToBookshelf = {
+                        openAfterAddChapter = null
+                        viewModel.addToBookshelf(detailUrl)
+                    },
+                    onReadNow = {
+                        openAfterAddChapter = 0
                         viewModel.addToBookshelf(detailUrl)
                     },
                     onOpenReader = { chapterIndex ->
-                        onOpenReader(state.book.id)
+                        openAfterAddChapter = chapterIndex
+                        viewModel.addToBookshelf(detailUrl)
                     }
                 )
             }
@@ -253,7 +309,9 @@ fun NovelDetailContent(
     book: Book,
     chapters: List<Chapter>,
     modifier: Modifier = Modifier,
+    isSaving: Boolean,
     onAddToBookshelf: () -> Unit,
+    onReadNow: () -> Unit,
     onOpenReader: (Int) -> Unit
 ) {
     var showAllChapters by remember { mutableStateOf(false) }
@@ -282,10 +340,28 @@ fun NovelDetailContent(
                     Spacer(Modifier.height(4.dp))
                     Text("${book.totalChapters} chương", fontSize = 12.sp)
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = onAddToBookshelf, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.LibraryAdd, null, modifier = Modifier.size(18.dp))
+                    Button(
+                        onClick = onAddToBookshelf,
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.LibraryAdd, null, modifier = Modifier.size(18.dp))
+                        }
                         Spacer(Modifier.width(6.dp))
-                        Text("Thêm vào kệ sách")
+                        Text("Thêm vào kệ")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onReadNow,
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Đọc ngay")
                     }
                 }
             }

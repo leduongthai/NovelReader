@@ -54,91 +54,66 @@ android {
     }
 }
 
+// ... (phần plugins và android giữ nguyên)
+
 dependencies {
     // --- Core Android ---
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
-    // ... (giữ nguyên phần plugins và android ở trên)
+    implementation("androidx.core:core-splashscreen:1.0.1")
 
-    dependencies {
-        // --- Core Android ---
-        implementation(libs.androidx.core.ktx)
-        implementation(libs.androidx.lifecycle.runtime.ktx)
-        implementation(libs.androidx.activity.compose)
+    // --- Jetpack Compose BOM ---
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.ui)
+    implementation(libs.androidx.ui.graphics)
+    implementation(libs.androidx.ui.tooling.preview)
+    implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.extended)
 
-        // SỬA LỖI TẠI ĐÂY: Nếu 'libs.androidx.core.splashscreen' vẫn báo đỏ,
-        // hãy dùng dòng comment phía dưới thay thế
-        //implementation(libs.androidx.core.splashscreen)
-         implementation("androidx.core:core-splashscreen:1.0.1")
+    // --- Navigation & Lifecycle ---
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
-        // --- Jetpack Compose BOM ---
-        implementation(platform(libs.androidx.compose.bom))
-        implementation(libs.androidx.ui)
-        implementation(libs.androidx.ui.graphics)
-        implementation(libs.androidx.ui.tooling.preview)
-        implementation(libs.androidx.material3)
-        implementation(libs.androidx.material.icons.extended)
+    // --- Hilt (Dependency Injection) ---
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.android.compiler)
+    implementation(libs.androidx.hilt.navigation.compose)
 
-        // --- Navigation Compose ---
-        implementation(libs.androidx.navigation.compose)
+    // --- Room Database ---
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 
-        // --- Lifecycle ViewModel ---
-        implementation(libs.androidx.lifecycle.viewmodel.compose)
-        implementation(libs.androidx.lifecycle.runtime.compose)
+    // --- Network (Retrofit + OkHttp) ---
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.converter.gson)
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.logging.interceptor)
+    implementation(libs.gson)
 
-        // --- Hilt (Dependency Injection) ---
-        implementation(libs.hilt.android)
-        ksp(libs.hilt.android.compiler)
-        implementation(libs.androidx.hilt.navigation.compose)
+    // --- Jsoup ---
+    implementation(libs.jsoup)
 
-        // --- Room (Local Database) ---
-        implementation(libs.androidx.room.runtime)
-        implementation(libs.androidx.room.ktx)
-        ksp(libs.androidx.room.compiler)
+    // --- Firebase ---
+    implementation(platform(libs.firebase.bom))
+    implementation("com.google.firebase:firebase-database-ktx")
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.google.firebase:firebase-messaging-ktx")
+    implementation("com.google.firebase:firebase-storage-ktx")
 
-        // --- Retrofit + OkHttp (Network) ---
-        implementation(libs.retrofit)
-        implementation(libs.retrofit.converter.gson)
-        implementation(libs.okhttp)
-        implementation(libs.okhttp.logging.interceptor)
-        implementation(libs.gson)
+    // --- Coroutines & Others ---
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.coil.compose)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.paging.runtime)
+    implementation(libs.androidx.paging.compose)
 
-        // --- Jsoup (Web Crawler) ---
-        implementation(libs.jsoup)
-
-        // --- Firebase ---
-        implementation(platform(libs.firebase.bom))
-        implementation("com.google.firebase:firebase-database-ktx")
-        implementation("com.google.firebase:firebase-auth-ktx")
-        implementation("com.google.firebase:firebase-firestore-ktx")
-        implementation("com.google.firebase:firebase-messaging-ktx")
-        // Thêm dòng này để sửa lỗi NonExistentClass cho Firebase Storage
-        implementation("com.google.firebase:firebase-storage-ktx")
-
-
-
-        // --- Coroutines ---
-        implementation(libs.kotlinx.coroutines.android)
-        implementation(libs.kotlinx.coroutines.play.services)
-
-        // --- Coil (Image Loading) ---
-        implementation(libs.coil.compose)
-
-        // --- DataStore (Preferences) ---
-        implementation(libs.androidx.datastore.preferences)
-
-        // --- Paging 3 ---
-        implementation(libs.androidx.paging.runtime)
-        implementation(libs.androidx.paging.compose)
-
-        // --- Testing ---
-        testImplementation(libs.junit)
-        androidTestImplementation(libs.androidx.junit)
-        androidTestImplementation(libs.androidx.espresso.core)
-        androidTestImplementation(platform(libs.androidx.compose.bom))
-        androidTestImplementation(libs.androidx.ui.test.junit4)
-        debugImplementation(libs.androidx.ui.tooling)
-        debugImplementation(libs.androidx.ui.test.manifest)
-    }
+    // --- Testing ---
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
 }

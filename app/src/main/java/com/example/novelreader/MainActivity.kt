@@ -29,10 +29,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Đọc deep link nếu app mở từ link
         val deepLinkBookId = intent?.data?.let { uri ->
             if (uri.host == "novelreader.app" && uri.pathSegments.firstOrNull() == "story") {
-                uri.pathSegments.getOrNull(1)  // lấy bookId từ /story/{bookId}
+                uri.pathSegments.getOrNull(1)
             } else null
         }
 
@@ -43,7 +42,6 @@ class MainActivity : ComponentActivity() {
                 val currentRoute = navBackStackEntry?.destination?.route
                 val hideBottomNav = currentRoute?.startsWith("reader/") == true
 
-                // Navigate đến reader nếu mở từ deep link
                 if (deepLinkBookId != null) {
                     androidx.compose.runtime.LaunchedEffect(deepLinkBookId) {
                         navController.navigate(Screen.Reader.createRoute(deepLinkBookId, 0))
@@ -67,7 +65,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Xử lý khi app đang chạy mà nhận được deep link mới
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

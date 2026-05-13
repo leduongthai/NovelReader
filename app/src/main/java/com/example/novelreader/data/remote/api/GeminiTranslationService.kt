@@ -12,20 +12,13 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// ============================================================
-// GEMINI API SERVICE
-// Uses user's own API key — no backend proxy needed.
-// Sends the ENTIRE chapter as a single request (no chunking).
-// ============================================================
-
 @Singleton
 class GeminiTranslationService @Inject constructor() {
 
     companion object {
-        private const val GEMINI_BASE_URL =
-            "https://generativelanguage.googleapis.com/v1beta/models"
+        private const val GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
         private const val MODEL = "gemini-2.0-flash-exp"
-        private const val MAX_OUTPUT_TOKENS = 65536   // Gemini 2.0 Flash supports large output
+        private const val MAX_OUTPUT_TOKENS = 65536
         private const val TIMEOUT_SECONDS = 120L
     }
 
@@ -35,14 +28,6 @@ class GeminiTranslationService @Inject constructor() {
         .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Translates an entire chapter in ONE API call.
-     *
-     * @param chapterContent  Full raw text of the chapter
-     * @param prompt          User's custom translation prompt (system instruction)
-     * @param apiKey          User's personal Gemini API key
-     * @return               Translated text or error
-     */
     suspend fun translateChapter(
         chapterContent: String,
         prompt: String,
@@ -54,16 +39,13 @@ class GeminiTranslationService @Inject constructor() {
 
             val url = "$GEMINI_BASE_URL/$MODEL:generateContent?key=$apiKey"
 
-            // Build request body following Gemini v1beta API spec
             val requestBody = JSONObject().apply {
-                // System instruction = user's translation prompt
                 put("system_instruction", JSONObject().apply {
                     put("parts", JSONArray().apply {
                         put(JSONObject().apply { put("text", prompt) })
                     })
                 })
 
-                // User message = the chapter content
                 put("contents", JSONArray().apply {
                     put(JSONObject().apply {
                         put("role", "user")
@@ -73,14 +55,12 @@ class GeminiTranslationService @Inject constructor() {
                     })
                 })
 
-                // Generation config
                 put("generationConfig", JSONObject().apply {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    put("temperature", 0.3)     // Lower = more faithful translation
+                    put("temperature", 0.3)
                     put("topP", 0.95)
                 })
 
-                // Safety settings — relaxed for novel content (may contain violence/romance)
                 put("safetySettings", JSONArray().apply {
                     listOf(
                         "HARM_CATEGORY_HARASSMENT",
@@ -112,18 +92,15 @@ class GeminiTranslationService @Inject constructor() {
                 throw Exception(errorMessage)
             }
 
-            // Parse response: candidates[0].content.parts[0].text
             val json = JSONObject(responseBody)
             val candidates = json.getJSONArray("candidates")
             if (candidates.length() == 0) throw Exception("Gemini không trả về kết quả")
 
             val candidate = candidates.getJSONObject(0)
 
-            // Check finish reason
             val finishReason = candidate.optString("finishReason", "STOP")
             if (finishReason == "SAFETY") throw Exception("Nội dung bị chặn bởi bộ lọc an toàn")
             if (finishReason == "MAX_TOKENS") {
-                // Partial result — still usable, just warn
             }
 
             candidate
@@ -135,9 +112,7 @@ class GeminiTranslationService @Inject constructor() {
         }
     }
 
-    /**
-     * Validates that the given API key is functional by sending a minimal test request.
-     */
+
     suspend fun validateApiKey(apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
         runCatching {
             val url = "$GEMINI_BASE_URL/$MODEL:generateContent?key=$apiKey"
