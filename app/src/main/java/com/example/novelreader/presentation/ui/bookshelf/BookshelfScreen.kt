@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,6 +92,7 @@ fun BookshelfScreen(
 ) {
     val books by viewModel.books.collectAsState()
     val progressMap by viewModel.progressMap.collectAsState()
+    val autoOpenLastBook by viewModel.autoOpenLastBook.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -99,6 +101,7 @@ fun BookshelfScreen(
     var showImportDialog by remember { mutableStateOf(false) }
     var pendingImportTitle by remember { mutableStateOf("") }
     var pendingImportText by remember { mutableStateOf("") }
+    var autoOpenedLastBook by rememberSaveable { mutableStateOf(false) }
 
     // Chọn file → đọc trên IO thread → import
     val fileLauncher = rememberLauncherForActivityResult(
@@ -119,8 +122,26 @@ fun BookshelfScreen(
         }
     }
 
+    val sortedBooks = remember(books, progressMap) {
+        books.sortedWith(
+            compareByDescending<Book> { progressMap[it.id]?.lastReadAt ?: 0L }
+                .thenByDescending { it.addedAt }
+        )
+    }
     val lastRead = progressMap.values.maxByOrNull { it.lastReadAt }
     val lastReadBook = lastRead?.let { h -> books.firstOrNull { it.id == h.bookId } }
+    val shelfBooks = remember(sortedBooks, lastReadBook?.id) {
+        sortedBooks.filterNot { it.id == lastReadBook?.id }
+    }
+
+    LaunchedEffect(autoOpenLastBook, lastReadBook?.id, lastRead?.chapterIndex) {
+        val book = lastReadBook
+        val history = lastRead
+        if (autoOpenLastBook && !autoOpenedLastBook && book != null && history != null) {
+            autoOpenedLastBook = true
+            onOpenReader(book.id, history.chapterIndex)
+        }
+    }
 
     LaunchedEffect(uiState) {
         when (val s = uiState) {
@@ -212,7 +233,7 @@ fun BookshelfScreen(
                 }
             }
 
-            items(books, key = { it.id }) { book ->
+            items(shelfBooks, key = { it.id }) { book ->
                 val history = progressMap[book.id]
                 BookGridItem(
                     book = book,

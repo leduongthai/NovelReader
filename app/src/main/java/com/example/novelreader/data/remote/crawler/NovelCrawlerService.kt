@@ -760,6 +760,9 @@ class NovelCrawlerService @Inject constructor() {
 
 class TxtChapterParser {
     companion object {
+        private const val FALLBACK_CHUNK_SIZE = 24_000
+        private const val MAX_SINGLE_CHAPTER_CHARS = 60_000
+
         val DEFAULT_CHAPTER_REGEX = Regex(
             pattern = """^(?:Chương|CHƯƠNG|Chapter|CHAPTER|Phần|Part)\s*\d+.*$""",
             options = setOf(RegexOption.MULTILINE)
@@ -793,7 +796,52 @@ class TxtChapterParser {
         }
         if (firstHeadingFound || currentContent.isNotBlank())
             chapters.add(build(bookId, currentTitle, currentContent.toString(), chapterIndex))
+
+        if (!firstHeadingFound) {
+            return splitFallback(bookId, normalized, "Phần")
+        }
+
+        if (chapters.size == 1 && chapters.first().content.length > MAX_SINGLE_CHAPTER_CHARS) {
+            val only = chapters.first()
+            return splitFallback(bookId, only.content, only.title)
+        }
+
         return chapters
+    }
+
+    private fun splitFallback(bookId: String, content: String, titlePrefix: String): List<Chapter> {
+        val normalized = content.trim()
+        if (normalized.isBlank()) return emptyList()
+
+        val parts = mutableListOf<String>()
+        val chunk = StringBuilder()
+        val blocks = normalized
+            .split(Regex("""\n\s*\n+"""))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        fun flushChunk() {
+            if (chunk.isNotBlank()) {
+                parts.add(chunk.toString().trim())
+                chunk.clear()
+            }
+        }
+
+        for (block in blocks.ifEmpty { listOf(normalized) }) {
+            if (block.length > FALLBACK_CHUNK_SIZE) {
+                flushChunk()
+                block.chunked(FALLBACK_CHUNK_SIZE).forEach { parts.add(it.trim()) }
+            } else {
+                if (chunk.length + block.length + 2 > FALLBACK_CHUNK_SIZE) flushChunk()
+                if (chunk.isNotEmpty()) chunk.append("\n\n")
+                chunk.append(block)
+            }
+        }
+        flushChunk()
+
+        return parts.mapIndexed { index, part ->
+            build(bookId, "$titlePrefix ${index + 1}", part, index)
+        }
     }
 
     private fun build(bookId: String, title: String, content: String, index: Int) = Chapter(

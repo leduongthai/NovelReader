@@ -18,8 +18,8 @@ Project Android hien tai dung package `com.example.novelreader` va da co `app/go
 - `community/prompts`: dien dan prompt, guest doc/sao chep.
 - `community/shared_novels`: metadata truyen TXT chia se, guest doc/tai.
 - `community/shared_novels_content`: noi dung TXT rieng, guest doc de import.
+- `community/comments`: binh luan duoi prompt va truyen chia se, app doc theo cap `community/comments/{targetType}` de hien danh sach/card.
 - `community/reviews`: danh gia/review.
-- `community/groups` va `community/group_messages`: nhom chat.
 
 ## 3. Ghi chu khi test
 

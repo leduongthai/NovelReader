@@ -1,6 +1,11 @@
 package com.example.novelreader.presentation.ui.profile
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,14 +22,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil.compose.AsyncImage
 import com.example.novelreader.domain.model.*
 import com.example.novelreader.presentation.viewmodel.*
 
@@ -97,7 +106,15 @@ fun ProfileScreen(
             }
 
             Spacer(Modifier.height(16.dp))
-            ReaderSettingsSection()
+            ReaderSettingsSection(
+                settings = settings,
+                onDarkModeChange = viewModel::saveDarkMode,
+                onFontSizeChange = viewModel::saveFontSize,
+                onFontFamilyChange = viewModel::saveFontFamily,
+                onBackgroundChange = viewModel::saveReaderBackground,
+                onLineSpacingChange = viewModel::saveLineSpacing,
+                onAutoOpenLastBookChange = viewModel::saveAutoOpenLastBook
+            )
         }
     }
 }
@@ -270,6 +287,21 @@ fun LoggedInProfile(
 @Composable
 fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
     var showEditDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val avatarLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val currentName = user?.name.orEmpty()
+        if (uri != null && currentName.isNotBlank()) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            onUpdateProfile(currentName, uri.toString())
+        }
+    }
 
     Row(
         modifier = Modifier.padding(16.dp),
@@ -281,11 +313,20 @@ fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
                 .background(roleBgColor(user?.userRole)),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = user?.name?.take(1)?.uppercase() ?: "?",
-                fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
+            if (!user?.avatarUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = user?.avatarUrl,
+                    contentDescription = user?.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    text = user?.name?.take(1)?.uppercase() ?: "?",
+                    fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
         }
 
         Spacer(Modifier.width(16.dp))
@@ -306,6 +347,12 @@ fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
 
         IconButton(onClick = { showEditDialog = true }) {
             Icon(Icons.Default.Edit, "Chỉnh sửa", tint = MaterialTheme.colorScheme.primary)
+        }
+        IconButton(
+            onClick = { avatarLauncher.launch(arrayOf("image/*")) },
+            enabled = user != null
+        ) {
+            Icon(Icons.Default.PhotoCamera, "Đổi ảnh đại diện", tint = MaterialTheme.colorScheme.primary)
         }
     }
 
@@ -831,7 +878,191 @@ fun AiSettingsSection(
 // ============================================================
 
 @Composable
-fun ReaderSettingsSection() {
+fun ReaderSettingsSection(
+    settings: ReaderSettings,
+    onDarkModeChange: (Boolean) -> Unit,
+    onFontSizeChange: (Float) -> Unit,
+    onFontFamilyChange: (String) -> Unit,
+    onBackgroundChange: (ReaderBackground) -> Unit,
+    onLineSpacingChange: (Float) -> Unit,
+    onAutoOpenLastBookChange: (Boolean) -> Unit
+) {
+    val fontOptions = listOf(
+        "default" to "Mặc định",
+        "serif" to "Serif",
+        "monospace" to "Mono"
+    )
+
+    Column(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Settings, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(8.dp))
+            Text("Cài đặt đọc", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
+
+        Card(shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                SettingSwitchRow(
+                    icon = Icons.Default.DarkMode,
+                    title = "Giao diện tối",
+                    subtitle = "Áp dụng cho toàn bộ ứng dụng",
+                    checked = settings.isDarkMode,
+                    onCheckedChange = onDarkModeChange
+                )
+
+                HorizontalDivider(thickness = 0.5.dp)
+
+                SettingSwitchRow(
+                    icon = Icons.Default.AutoStories,
+                    title = "Tự mở truyện đang đọc",
+                    subtitle = "Khi vào kệ sách, mở truyện đọc gần nhất",
+                    checked = settings.autoOpenLastBook,
+                    onCheckedChange = onAutoOpenLastBookChange
+                )
+
+                HorizontalDivider(thickness = 0.5.dp)
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SettingHeader(
+                        icon = Icons.Default.FormatSize,
+                        title = "Cỡ chữ",
+                        subtitle = "Dùng trong màn hình đọc"
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { onFontSizeChange((settings.fontSize - 1).coerceAtLeast(12f)) }) {
+                            Icon(Icons.Default.Remove, null)
+                        }
+                        Text(
+                            "${settings.fontSize.toInt()}pt",
+                            modifier = Modifier.width(56.dp),
+                            textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.Medium
+                        )
+                        IconButton(onClick = { onFontSizeChange((settings.fontSize + 1).coerceAtMost(36f)) }) {
+                            Icon(Icons.Default.Add, null)
+                        }
+                    }
+                }
+
+                HorizontalDivider(thickness = 0.5.dp)
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SettingHeader(
+                        icon = Icons.Default.TextFields,
+                        title = "Font chữ",
+                        subtitle = "Chọn kiểu chữ khi đọc truyện"
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        fontOptions.forEach { (key, label) ->
+                            FilterChip(
+                                selected = settings.fontFamily == key,
+                                onClick = { onFontFamilyChange(key) },
+                                label = { Text(label, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(thickness = 0.5.dp)
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SettingHeader(
+                        icon = Icons.Default.FormatLineSpacing,
+                        title = "Giãn dòng",
+                        subtitle = String.format("%.1fx", settings.lineSpacing)
+                    )
+                    Slider(
+                        value = settings.lineSpacing,
+                        onValueChange = onLineSpacingChange,
+                        valueRange = 1.2f..2.4f,
+                        steps = 5
+                    )
+                }
+
+                HorizontalDivider(thickness = 0.5.dp)
+
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SettingHeader(
+                        icon = Icons.Default.Palette,
+                        title = "Nền đọc truyện",
+                        subtitle = "Màu nền và màu chữ trong reader"
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ReaderBackground.entries.forEach { bg ->
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(bg.bg))
+                                    .border(
+                                        width = if (settings.backgroundColor == bg) 2.dp else 1.dp,
+                                        color = if (settings.backgroundColor == bg) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant
+                                        },
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { onBackgroundChange(bg) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            "Phiên bản: 1.0.0",
+            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 24.dp),
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun SettingHeader(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitchRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+fun LegacyReaderSettingsSection() {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         Text("📚 Ứng dụng", fontWeight = FontWeight.Bold, fontSize = 16.sp)
         Spacer(Modifier.height(8.dp))

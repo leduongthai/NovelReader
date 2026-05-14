@@ -43,29 +43,23 @@
         }
       },
 
+      "comments": {
+        "$targetType": {
+          ".read": true,
+          "$targetId": {
+            ".indexOn": ["createdAt"],
+            "$commentId": {
+              ".write": "auth != null && ((!data.exists() && newData.child('userId').val() === auth.uid) || (data.exists() && (data.child('userId').val() === auth.uid || root.child('users').child(auth.uid).child('role').val() === 'mod' || root.child('users').child(auth.uid).child('role').val() === 'admin')))"
+            }
+          }
+        }
+      },
+
       "reviews": {
         "$bookId": {
           ".read": true,
           ".indexOn": ["createdAt"],
           "$reviewId": {
-            ".write": "auth != null"
-          }
-        }
-      },
-
-      "groups": {
-        ".read": true,
-        ".indexOn": ["createdAt"],
-        "$groupId": {
-          ".write": "auth != null"
-        }
-      },
-
-      "group_messages": {
-        "$groupId": {
-          ".read": "auth != null",
-          ".indexOn": ["timestamp"],
-          "$messageId": {
             ".write": "auth != null"
           }
         }

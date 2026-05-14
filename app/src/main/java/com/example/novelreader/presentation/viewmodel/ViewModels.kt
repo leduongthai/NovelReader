@@ -20,8 +20,6 @@ import kotlinx.coroutines.flow.combine
 import com.example.novelreader.data.repository.ReviewRepository
 import com.example.novelreader.domain.model.Review
 import kotlinx.coroutines.flow.map
-import com.example.novelreader.data.repository.GroupRepository
-import com.example.novelreader.domain.model.ChatGroup
 import com.example.novelreader.data.remote.crawler.DiscoverFeed
 
 // ============================================================
@@ -30,29 +28,28 @@ import com.example.novelreader.data.remote.crawler.DiscoverFeed
 
 @HiltViewModel
 class BookshelfViewModel @Inject constructor(
-    private val bookRepo: BookRepository
+    private val bookRepo: BookRepository,
+    private val dataStore: DataStore<Preferences>
 ) : ViewModel() {
 
     val books: StateFlow<List<Book>> = bookRepo.getAllBooks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _progressMap = MutableStateFlow<Map<String, ReadingHistory>>(emptyMap())
-    val progressMap: StateFlow<Map<String, ReadingHistory>> = _progressMap.asStateFlow()
+    val autoOpenLastBook: StateFlow<Boolean> = dataStore.data
+        .map { it[ReaderViewModel.AUTO_OPEN_LAST_BOOK] ?: false }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val progressMap: StateFlow<Map<String, ReadingHistory>> =
+        combine(books, bookRepo.getAllReadingProgress()) { bookList, histories ->
+            val bookIds = bookList.map { it.id }.toSet()
+            histories
+                .filter { it.bookId in bookIds }
+                .distinctBy { it.bookId }
+                .associateBy { it.bookId }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     private val _uiState = MutableStateFlow<BookshelfUiState>(BookshelfUiState.Idle)
     val uiState: StateFlow<BookshelfUiState> = _uiState.asStateFlow()
-
-    init {
-        viewModelScope.launch {
-            books.collectLatest { bookList ->
-                val map = bookList.associate { book ->
-                    val history = bookRepo.getReadingProgress(book.id).firstOrNull()
-                    book.id to (history ?: ReadingHistory(bookId = book.id))
-                }
-                _progressMap.value = map
-            }
-        }
-    }
 
     fun deleteBook(bookId: String) = viewModelScope.launch {
         bookRepo.deleteBook(bookId)
@@ -245,6 +242,9 @@ class ReaderViewModel @Inject constructor(
     private val _translationState = MutableStateFlow<TranslationState>(TranslationState.Idle)
     val translationState: StateFlow<TranslationState> = _translationState.asStateFlow()
 
+    private val _scrollRequests = MutableSharedFlow<Float>(extraBufferCapacity = 1)
+    val scrollRequests: SharedFlow<Float> = _scrollRequests.asSharedFlow()
+
     companion object {
         val FONT_SIZE = floatPreferencesKey("font_size")
         val FONT_FAMILY = stringPreferencesKey("font_family")
@@ -253,6 +253,7 @@ class ReaderViewModel @Inject constructor(
         val GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
         val TRANSLATION_PROMPT = stringPreferencesKey("translation_prompt")
         val LINE_SPACING = floatPreferencesKey("line_spacing")
+        val AUTO_OPEN_LAST_BOOK = booleanPreferencesKey("auto_open_last_book")
     }
 
     init {
@@ -263,6 +264,7 @@ class ReaderViewModel @Inject constructor(
                     fontFamily = prefs[FONT_FAMILY] ?: "default",
                     backgroundColor = ReaderBackground.valueOf(prefs[BG_COLOR] ?: "PAPER"),
                     isDarkMode = prefs[IS_DARK_MODE] ?: false,
+                    autoOpenLastBook = prefs[AUTO_OPEN_LAST_BOOK] ?: false,
                     geminiApiKey = prefs[GEMINI_API_KEY] ?: "",
                     translationPrompt = prefs[TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                     lineSpacing = prefs[LINE_SPACING] ?: 1.6f
@@ -277,13 +279,14 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun openChapter(chapter: Chapter) {
+    fun openChapter(chapter: Chapter, targetScrollFraction: Float = 0f) {
         viewModelScope.launch {
             _readerState.value = ReaderUiState.Loading
             chapterRepo.ensureContentLoaded(chapter)
                 .onSuccess {
                     _currentChapter.value = it
                     _readerState.value = ReaderUiState.Ready
+                    _scrollRequests.emit(targetScrollFraction.coerceIn(0f, 1f))
                 }
                 .onFailure {
                     _readerState.value = ReaderUiState.Error(it.message ?: "Không thể tải chương")
@@ -291,10 +294,10 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun navigateChapter(delta: Int) {
+    fun navigateChapter(delta: Int, currentScrollFraction: Float = 0f) {
         val current = _currentChapter.value ?: return
         val next = _chapters.value.firstOrNull { it.chapterIndex == current.chapterIndex + delta }
-        next?.let { openChapter(it) }
+        next?.let { openChapter(it, currentScrollFraction) }
     }
 
     fun translateCurrentChapter() {
@@ -342,6 +345,8 @@ class ReaderViewModel @Inject constructor(
     fun updateFontFamily(family: String) = viewModelScope.launch { dataStore.edit { it[FONT_FAMILY] = family } }
     fun updateBackground(bg: ReaderBackground) = viewModelScope.launch { dataStore.edit { it[BG_COLOR] = bg.name } }
     fun updateDarkMode(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[IS_DARK_MODE] = enabled } }
+    fun updateLineSpacing(value: Float) = viewModelScope.launch { dataStore.edit { it[LINE_SPACING] = value } }
+    fun updateAutoOpenLastBook(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[AUTO_OPEN_LAST_BOOK] = enabled } }
     fun updateApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[GEMINI_API_KEY] = key } }
     fun updateTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[TRANSLATION_PROMPT] = prompt } }
 
@@ -391,6 +396,14 @@ class CommunityViewModel @Inject constructor(
     val sharedNovels: StateFlow<List<SharedNovel>> = communityRepo.getSharedNovels()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val promptComments: StateFlow<Map<String, List<CommunityComment>>> =
+        communityRepo.getComments("prompt")
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    val sharedNovelComments: StateFlow<Map<String, List<CommunityComment>>> =
+        communityRepo.getComments("shared_novel")
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     val isLoggedIn: Boolean get() = communityRepo.isLoggedIn
 
     private val _actionState = MutableStateFlow<CommunityActionState>(CommunityActionState.Idle)
@@ -412,6 +425,18 @@ class CommunityViewModel @Inject constructor(
     fun likePrompt(promptId: String) = viewModelScope.launch {
         communityRepo.likePrompt(promptId)
             .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi đánh giá prompt") }
+    }
+
+    fun postPromptComment(promptId: String, content: String) = viewModelScope.launch {
+        communityRepo.postComment("prompt", promptId, content)
+            .onSuccess { _actionState.value = CommunityActionState.Success("Đã gửi bình luận") }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi gửi bình luận") }
+    }
+
+    fun postSharedNovelComment(novelId: String, content: String) = viewModelScope.launch {
+        communityRepo.postComment("shared_novel", novelId, content)
+            .onSuccess { _actionState.value = CommunityActionState.Success("Đã gửi bình luận") }
+            .onFailure { _actionState.value = CommunityActionState.Error(it.message ?: "Lỗi gửi bình luận") }
     }
 
     // --- Xóa nội dung (chủ bài hoặc Mod/Admin) ---
@@ -497,7 +522,10 @@ class ProfileViewModel @Inject constructor(
                     translationPrompt = prefs[ReaderViewModel.TRANSLATION_PROMPT] ?: DEFAULT_TRANSLATION_PROMPT,
                     fontSize          = prefs[ReaderViewModel.FONT_SIZE] ?: 18f,
                     fontFamily        = prefs[ReaderViewModel.FONT_FAMILY] ?: "default",
-                    isDarkMode        = prefs[ReaderViewModel.IS_DARK_MODE] ?: false
+                    lineSpacing       = prefs[ReaderViewModel.LINE_SPACING] ?: 1.6f,
+                    backgroundColor   = ReaderBackground.valueOf(prefs[ReaderViewModel.BG_COLOR] ?: ReaderBackground.PAPER.name),
+                    isDarkMode        = prefs[ReaderViewModel.IS_DARK_MODE] ?: false,
+                    autoOpenLastBook  = prefs[ReaderViewModel.AUTO_OPEN_LAST_BOOK] ?: false
                 )
             }
         }
@@ -558,7 +586,10 @@ class ProfileViewModel @Inject constructor(
         _profileAction.value = ProfileActionState.Loading
         communityRepo.updateProfile(name, avatarUrl)
             .onSuccess {
-                _currentUser.value = _currentUser.value?.copy(name = name.trim())
+                _currentUser.value = _currentUser.value?.copy(
+                    name = name.trim(),
+                    avatarUrl = avatarUrl.ifBlank { _currentUser.value?.avatarUrl.orEmpty() }
+                )
                 _profileAction.value = ProfileActionState.Success("Đã cập nhật thông tin")
                 kotlinx.coroutines.delay(100)
                 _profileAction.value = ProfileActionState.Idle
@@ -572,6 +603,16 @@ class ProfileViewModel @Inject constructor(
 
     fun saveApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key } }
     fun saveTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.TRANSLATION_PROMPT] = prompt } }
+    fun saveFontSize(size: Float) = viewModelScope.launch {
+        dataStore.edit { it[ReaderViewModel.FONT_SIZE] = size.coerceIn(12f, 36f) }
+    }
+    fun saveFontFamily(family: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.FONT_FAMILY] = family } }
+    fun saveLineSpacing(value: Float) = viewModelScope.launch {
+        dataStore.edit { it[ReaderViewModel.LINE_SPACING] = value.coerceIn(1.2f, 2.4f) }
+    }
+    fun saveReaderBackground(bg: ReaderBackground) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.BG_COLOR] = bg.name } }
+    fun saveDarkMode(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.IS_DARK_MODE] = enabled } }
+    fun saveAutoOpenLastBook(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.AUTO_OPEN_LAST_BOOK] = enabled } }
 }
 
 sealed class ProfileActionState {
@@ -699,6 +740,18 @@ class BookDetailViewModel @Inject constructor(
             _saveState.value = SaveState.Idle
         }
     }
+
+    fun updateBookCover(coverUrl: String) {
+        val bookId = _book.value?.id ?: return
+        if (coverUrl.isBlank()) return
+        viewModelScope.launch {
+            bookRepo.updateBookCover(bookId, coverUrl)
+            _book.value = _book.value?.copy(coverUrl = coverUrl)
+            _saveState.value = SaveState.Saved
+            kotlinx.coroutines.delay(100)
+            _saveState.value = SaveState.Idle
+        }
+    }
 }
 
 sealed class SaveState {
@@ -765,92 +818,4 @@ sealed class ReviewUiState {
     object Loading : ReviewUiState()
     data class Success(val message: String) : ReviewUiState()
     data class Error(val message: String) : ReviewUiState()
-}
-
-// ============================================================
-// GROUP VIEW MODEL
-// ============================================================
-
-@HiltViewModel
-class GroupViewModel @Inject constructor(
-    private val groupRepo: GroupRepository
-) : ViewModel() {
-
-    private val _groups = MutableStateFlow<List<ChatGroup>>(emptyList())
-    val groups: StateFlow<List<ChatGroup>> = _groups.asStateFlow()
-
-    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
-
-    private val _currentGroup = MutableStateFlow<ChatGroup?>(null)
-    val currentGroup: StateFlow<ChatGroup?> = _currentGroup.asStateFlow()
-
-    private val _uiState = MutableStateFlow<GroupUiState>(GroupUiState.Idle)
-    val uiState: StateFlow<GroupUiState> = _uiState.asStateFlow()
-
-    val currentUserId: String? get() = groupRepo.currentUserId
-    val isLoggedIn: Boolean get() = groupRepo.isLoggedIn
-
-    init {
-        viewModelScope.launch { groupRepo.getGroups().collect { _groups.value = it } }
-    }
-
-    fun openGroup(group: ChatGroup) {
-        _currentGroup.value = group
-        viewModelScope.launch { groupRepo.getMessages(group.id).collect { _messages.value = it } }
-    }
-
-    fun createGroup(name: String, description: String) = viewModelScope.launch {
-        if (name.isBlank()) { _uiState.value = GroupUiState.Error("Tên nhóm không được trống"); return@launch }
-        _uiState.value = GroupUiState.Loading
-        groupRepo.createGroup(name, description)
-            .onSuccess { _uiState.value = GroupUiState.Success("Tạo nhóm thành công!") }
-            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi tạo nhóm") }
-    }
-
-    fun joinGroup(groupId: String) = viewModelScope.launch {
-        groupRepo.joinGroup(groupId)
-            .onSuccess { _uiState.value = GroupUiState.Success("Đã tham gia nhóm!") }
-            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi tham gia nhóm") }
-    }
-
-    fun leaveGroup(groupId: String) = viewModelScope.launch {
-        groupRepo.leaveGroup(groupId)
-            .onSuccess { _uiState.value = GroupUiState.Success("Đã rời nhóm") }
-            .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi rời nhóm") }
-    }
-
-    fun sendMessage(content: String, replyToId: String? = null, replyToContent: String? = null) {
-        val groupId = _currentGroup.value?.id ?: return
-        viewModelScope.launch {
-            groupRepo.sendMessage(groupId, content, replyToId, replyToContent)
-                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi gửi tin") }
-        }
-    }
-
-    fun deleteMessage(messageId: String) {
-        val groupId = _currentGroup.value?.id ?: return
-        viewModelScope.launch {
-            groupRepo.deleteMessage(groupId, messageId)
-                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi xóa tin") }
-        }
-    }
-
-    fun kickMember(targetUid: String) {
-        val groupId = _currentGroup.value?.id ?: return
-        viewModelScope.launch {
-            groupRepo.kickMember(groupId, targetUid)
-                .onSuccess { _uiState.value = GroupUiState.Success("Đã kick thành viên") }
-                .onFailure { _uiState.value = GroupUiState.Error(it.message ?: "Lỗi kick thành viên") }
-        }
-    }
-
-    fun clearUiState() { _uiState.value = GroupUiState.Idle }
-}
-
-sealed class GroupUiState {
-    object Idle : GroupUiState()
-    object Loading : GroupUiState()
-    data class Success(val message: String) : GroupUiState()
-    data class Error(val message: String) : GroupUiState()
 }

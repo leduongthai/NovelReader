@@ -10,7 +10,9 @@ interface BookRepository {
     suspend fun addBook(book: Book)
     suspend fun deleteBook(bookId: String)
     suspend fun updateBookInfo(bookId: String, title: String, author: String)
+    suspend fun updateBookCover(bookId: String, coverUrl: String)
     fun getReadingProgress(bookId: String): Flow<ReadingHistory?>
+    fun getAllReadingProgress(): Flow<List<ReadingHistory>>
     suspend fun updateReadingProgress(history: ReadingHistory)
     suspend fun crawlAndSaveNovel(detailUrl: String): Result<Book>
     suspend fun importTxtFile(rawText: String, bookTitle: String, customRegex: String?): Result<Book>

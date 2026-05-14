@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.example.novelreader.domain.model.ChatMessage
+import com.example.novelreader.domain.model.CommunityComment
 import com.example.novelreader.domain.model.Prompt
 import com.example.novelreader.domain.model.SharedNovel
 import com.example.novelreader.presentation.viewmodel.CommunityViewModel
@@ -42,7 +43,6 @@ import com.example.novelreader.presentation.viewmodel.CommunityActionState
 
 @Composable
 fun CommunityScreen(
-    onOpenGroupList: () -> Unit,
     viewModel: CommunityViewModel = hiltViewModel()) {
     val tabs = listOf("Chat", "Chia sẻ truyện", "Diễn đàn")
     var selectedTab by remember { mutableStateOf(0) }
@@ -82,7 +82,7 @@ fun CommunityScreen(
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (selectedTab) {
-                0 -> ChatTab(viewModel = viewModel, onOpenGroupList = onOpenGroupList)
+                0 -> ChatTab(viewModel = viewModel)
                 1 -> SharedNovelsTab(viewModel)
                 2 -> PromptForumTab(viewModel)
             }
@@ -95,10 +95,7 @@ fun CommunityScreen(
 // ============================================================
 
 @Composable
-fun ChatTab(
-    viewModel: CommunityViewModel,
-    onOpenGroupList: () -> Unit
-) {
+fun ChatTab(viewModel: CommunityViewModel) {
     val messages by viewModel.messages.collectAsState()
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -119,12 +116,6 @@ fun ChatTab(
             Icon(Icons.Default.Forum, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(8.dp))
             Text("Chat cộng đồng", fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = onOpenGroupList) {
-                Icon(Icons.Default.Groups, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Nhóm")
-            }
         }
         HorizontalDivider()
 
@@ -274,6 +265,7 @@ fun ChatBubble(message: ChatMessage, isOwn: Boolean) {
 @Composable
 fun SharedNovelsTab(viewModel: CommunityViewModel) {
     val novels by viewModel.sharedNovels.collectAsState()
+    val comments by viewModel.sharedNovelComments.collectAsState()
     val context = LocalContext.current
     var showTitleDialog by remember { mutableStateOf(false) }
     var selectedBytes by remember { mutableStateOf<ByteArray?>(null) }
@@ -329,7 +321,10 @@ fun SharedNovelsTab(viewModel: CommunityViewModel) {
             items(novels, key = { it.id }) { novel ->
                 SharedNovelCard(
                     novel = novel,
-                    onDownload = { viewModel.downloadAndImport(novel) }
+                    comments = comments[novel.id].orEmpty(),
+                    canComment = viewModel.isLoggedIn,
+                    onDownload = { viewModel.downloadAndImport(novel) },
+                    onComment = { viewModel.postSharedNovelComment(novel.id, it) }
                 )
             }
         }
@@ -370,26 +365,36 @@ fun SharedNovelsTab(viewModel: CommunityViewModel) {
 }
 
 @Composable
-fun SharedNovelCard(novel: SharedNovel, onDownload: () -> Unit) {
+fun SharedNovelCard(
+    novel: SharedNovel,
+    comments: List<CommunityComment>,
+    canComment: Boolean,
+    onDownload: () -> Unit,
+    onComment: (String) -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Article, null,
-                modifier = Modifier.size(40.dp),
-                tint = MaterialTheme.colorScheme.primary
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Article, null,
+                    modifier = Modifier.size(40.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(novel.title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("bởi ${novel.uploaderName} • ${novel.fileSize / 1024}KB",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${novel.downloadCount} lượt tải", fontSize = 11.sp)
+                }
+                IconButton(onClick = onDownload) {
+                    Icon(Icons.Default.Download, "Tải về")
+                }
+            }
+            CommentSection(
+                comments = comments,
+                canComment = canComment,
+                onPost = onComment
             )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(novel.title, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("bởi ${novel.uploaderName} • ${novel.fileSize / 1024}KB",
-                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${novel.downloadCount} lượt tải", fontSize = 11.sp)
-            }
-            IconButton(onClick = onDownload) {
-                Icon(Icons.Default.Download, "Tải về")
-            }
         }
     }
 }
@@ -401,6 +406,7 @@ fun SharedNovelCard(novel: SharedNovel, onDownload: () -> Unit) {
 @Composable
 fun PromptForumTab(viewModel: CommunityViewModel) {
     val prompts by viewModel.prompts.collectAsState()
+    val comments by viewModel.promptComments.collectAsState()
     var showPostDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
@@ -441,7 +447,10 @@ fun PromptForumTab(viewModel: CommunityViewModel) {
                 PromptCard(
                     prompt = prompt,
                     canLike = viewModel.isLoggedIn,
-                    onLike = { viewModel.likePrompt(prompt.id) }
+                    comments = comments[prompt.id].orEmpty(),
+                    canComment = viewModel.isLoggedIn,
+                    onLike = { viewModel.likePrompt(prompt.id) },
+                    onComment = { viewModel.postPromptComment(prompt.id, it) }
                 )
             }
         }
@@ -459,7 +468,14 @@ fun PromptForumTab(viewModel: CommunityViewModel) {
 }
 
 @Composable
-fun PromptCard(prompt: Prompt, canLike: Boolean, onLike: () -> Unit) {
+fun PromptCard(
+    prompt: Prompt,
+    canLike: Boolean,
+    comments: List<CommunityComment>,
+    canComment: Boolean,
+    onLike: () -> Unit,
+    onComment: (String) -> Unit
+) {
     val clipboard = LocalClipboardManager.current
     var expanded by remember { mutableStateOf(false) }
 
@@ -498,6 +514,81 @@ fun PromptCard(prompt: Prompt, canLike: Boolean, onLike: () -> Unit) {
                     }
                 }
             }
+            CommentSection(
+                comments = comments,
+                canComment = canComment,
+                onPost = onComment
+            )
+        }
+    }
+}
+
+@Composable
+fun CommentSection(
+    comments: List<CommunityComment>,
+    canComment: Boolean,
+    onPost: (String) -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+
+    HorizontalDivider(modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
+    Text(
+        "Bình luận (${comments.size})",
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp
+    )
+    Spacer(Modifier.height(6.dp))
+
+    comments.forEach { comment ->
+        CommentItem(comment)
+        Spacer(Modifier.height(6.dp))
+    }
+
+    if (canComment) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                placeholder = { Text("Viết bình luận...") },
+                modifier = Modifier.weight(1f),
+                maxLines = 3,
+                shape = RoundedCornerShape(18.dp)
+            )
+            IconButton(
+                onClick = {
+                    if (input.isNotBlank()) {
+                        onPost(input)
+                        input = ""
+                    }
+                }
+            ) {
+                Icon(Icons.Default.Send, "Gửi bình luận", tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+    } else {
+        Text(
+            "Đăng nhập để bình luận.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+fun CommentItem(comment: CommunityComment) {
+    Row(verticalAlignment = Alignment.Top) {
+        AsyncImage(
+            model = comment.userAvatar.ifBlank { null },
+            contentDescription = comment.userName,
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(comment.userName, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            Text(comment.content, fontSize = 12.sp, lineHeight = 17.sp)
         }
     }
 }
@@ -562,16 +653,5 @@ fun PostPromptDialog(onPost: (String, String) -> Unit, onDismiss: () -> Unit) {
 fun FeedbackTab() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text("Góp ý & Báo lỗi\n(Liên kết đến form phản hồi)", textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-    }
-}
-
-@Composable
-fun GroupListButton(onOpenGroupList: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Button(onClick = onOpenGroupList) {
-            Icon(Icons.Default.Forum, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Vào khu vực nhóm chat")
-        }
     }
 }

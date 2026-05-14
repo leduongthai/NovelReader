@@ -27,6 +27,10 @@ class BookRepositoryImpl @Inject constructor(
     private val historyDao: ReadingHistoryDao,
     private val crawler: NovelCrawlerService
 ) : BookRepository {
+    companion object {
+        const val DEFAULT_TXT_COVER =
+            "android.resource://com.example.novelreader/drawable/default_book_cover"
+    }
 
     override fun getAllBooks(): Flow<List<Book>> =
         bookDao.getAllBooks().map { list -> list.map { it.toDomain() } }
@@ -48,10 +52,16 @@ class BookRepositoryImpl @Inject constructor(
     override suspend fun updateBookInfo(bookId: String, title: String, author: String) =
         bookDao.updateBookInfo(bookId, title, author)
 
+    override suspend fun updateBookCover(bookId: String, coverUrl: String) =
+        bookDao.updateBookCover(bookId, coverUrl)
+
     override fun getReadingProgress(bookId: String): Flow<ReadingHistory?> =
         historyDao.getAllHistory().map { list ->
             list.firstOrNull { it.bookId == bookId }?.toDomain()
         }
+
+    override fun getAllReadingProgress(): Flow<List<ReadingHistory>> =
+        historyDao.getAllHistory().map { list -> list.map { it.toDomain() } }
 
     override suspend fun updateReadingProgress(history: ReadingHistory) =
         historyDao.upsertHistory(history.toEntity())
@@ -74,7 +84,12 @@ class BookRepositoryImpl @Inject constructor(
     ): Result<Book> = withContext(kotlinx.coroutines.Dispatchers.IO) {
         runCatching {
             val bookId = UUID.randomUUID().toString()
-            val book = Book(id = bookId, title = bookTitle, source = "local")
+            val book = Book(
+                id = bookId,
+                title = bookTitle,
+                coverUrl = DEFAULT_TXT_COVER,
+                source = "local"
+            )
 
             val parser = TxtChapterParser()
             val regex = customRegex?.let { Regex(it, setOf(RegexOption.MULTILINE)) }
@@ -186,7 +201,7 @@ fun ReadingHistoryEntity.toDomain() = ReadingHistory(
 )
 
 fun ReadingHistory.toEntity() = ReadingHistoryEntity(
-    id = id.ifEmpty { UUID.randomUUID().toString() },
+    id = id.ifEmpty { bookId },
     bookId = bookId, chapterId = chapterId,
     chapterIndex = chapterIndex, scrollPosition = scrollPosition, lastReadAt = lastReadAt
 )

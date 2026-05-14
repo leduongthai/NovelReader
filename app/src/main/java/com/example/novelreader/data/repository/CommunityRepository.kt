@@ -28,6 +28,7 @@ class CommunityRepository @Inject constructor(
         private const val PROMPTS_NODE           = "community/prompts"
         private const val SHARED_NOVELS_NODE     = "community/shared_novels"
         private const val SHARED_NOVELS_CONTENT  = "community/shared_novels_content"  // nội dung riêng
+        private const val COMMENTS_NODE          = "community/comments"
         private const val USERS_NODE             = "users"
         private const val CHAT_MESSAGE_LIMIT     = 100
         private const val MAX_FILE_SIZE_BYTES    = 900_000  // ~900 KB — an toàn dưới giới hạn 1MB của RTDB
@@ -337,6 +338,59 @@ class CommunityRepository @Inject constructor(
     }
 
     // =========================================================
+    // COMMENTS — dưới truyện chia sẻ và prompt
+    // =========================================================
+
+    fun getComments(targetType: String): Flow<Map<String, List<CommunityComment>>> = callbackFlow {
+        val ref = database.reference.child(COMMENTS_NODE).child(targetType)
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val map = snapshot.children.associate { target ->
+                    val targetId = target.key.orEmpty()
+                    val comments = target.children
+                        .mapNotNull { it.toCommunityComment(targetType, targetId) }
+                        .sortedBy { it.createdAt }
+                    targetId to comments
+                }
+                trySend(map)
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                trySend(emptyMap())
+                close()
+            }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
+    }
+
+    suspend fun postComment(
+        targetType: String,
+        targetId: String,
+        content: String
+    ): Result<Unit> = runCatching {
+        val user = auth.currentUser ?: throw Exception("Bạn cần đăng nhập để bình luận")
+        checkNotBanned()
+        val trimmed = content.trim()
+        if (trimmed.isBlank()) throw Exception("Bình luận không được trống")
+
+        val userData = fetchUser(user.uid)
+        val id = UUID.randomUUID().toString()
+        val comment = CommunityComment(
+            id = id,
+            targetType = targetType,
+            targetId = targetId,
+            userId = user.uid,
+            userName = userData?.name ?: user.displayName ?: "Ẩn danh",
+            userAvatar = userData?.avatarUrl ?: "",
+            content = trimmed,
+            createdAt = System.currentTimeMillis()
+        )
+        database.reference.child(COMMENTS_NODE).child(targetType).child(targetId).child(id)
+            .setValue(comment.toFirebaseMap()).await()
+    }
+
+    // =========================================================
     // ADMIN / MOD — Quản lý người dùng
     // =========================================================
 
@@ -486,6 +540,22 @@ class CommunityRepository @Inject constructor(
         )
     }.getOrNull()
 
+    private fun DataSnapshot.toCommunityComment(
+        targetTypeFallback: String,
+        targetIdFallback: String
+    ): CommunityComment? = runCatching {
+        CommunityComment(
+            id         = child("id").getValue(String::class.java) ?: key ?: "",
+            targetType = child("targetType").getValue(String::class.java) ?: targetTypeFallback,
+            targetId   = child("targetId").getValue(String::class.java) ?: targetIdFallback,
+            userId     = child("userId").getValue(String::class.java) ?: "",
+            userName   = child("userName").getValue(String::class.java) ?: "Ẩn danh",
+            userAvatar = child("userAvatar").getValue(String::class.java) ?: "",
+            content    = child("content").getValue(String::class.java) ?: "",
+            createdAt  = child("createdAt").getValue(Long::class.java) ?: 0L
+        )
+    }.getOrNull()
+
     private fun DataSnapshot.toUser(): User? = runCatching {
         User(
             id        = child("id").getValue(String::class.java) ?: key ?: "",
@@ -548,6 +618,17 @@ class CommunityRepository @Inject constructor(
         "fileSize"      to fileSize,
         "downloadCount" to downloadCount,
         "uploadedAt"    to uploadedAt
+    )
+
+    private fun CommunityComment.toFirebaseMap() = mapOf(
+        "id"         to id,
+        "targetType" to targetType,
+        "targetId"   to targetId,
+        "userId"     to userId,
+        "userName"   to userName,
+        "userAvatar" to userAvatar,
+        "content"    to content,
+        "createdAt"  to createdAt
     )
 
     private fun User.toFirebaseMap() = mapOf(

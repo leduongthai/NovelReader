@@ -1,11 +1,13 @@
 package com.example.novelreader.presentation.ui.reader
 
 import android.speech.tts.TextToSpeech
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,6 +35,9 @@ import java.util.Locale
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlin.math.roundToInt
 
 // ============================================================
 // READER SCREEN — Full-featured novel reader
@@ -64,10 +69,26 @@ fun ReaderScreen(
     var isTtsPlaying by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
+    var pendingScrollFraction by remember { mutableStateOf<Float?>(null) }
 
     // Background and text colors from settings
     val bg = Color(settings.backgroundColor.bg)
     val textColor = Color(settings.backgroundColor.text)
+    val saveCurrentProgress = {
+        chapter?.let { c ->
+            viewModel.saveProgress(
+                bookId = bookId,
+                chapterId = c.id,
+                chapterIndex = c.chapterIndex,
+                scrollPosition = calculateChapterScrollFraction(listState)
+            )
+        }
+    }
+
+    BackHandler {
+        saveCurrentProgress()
+        onBack()
+    }
 
     // Load book on entry
     LaunchedEffect(bookId) {
@@ -101,12 +122,9 @@ fun ReaderScreen(
         }
     }
 
-    // Save progress periodically
-    LaunchedEffect(listState.firstVisibleItemIndex) {
-        chapter?.let { c ->
-            val total = chapters.size.coerceAtLeast(1)
-            val progress = (c.chapterIndex.toFloat() + listState.firstVisibleItemScrollOffset / 1000f) / total
-            viewModel.saveProgress(bookId, c.id, c.chapterIndex, progress.coerceIn(0f, 1f))
+    LaunchedEffect(Unit) {
+        viewModel.scrollRequests.collect { fraction ->
+            pendingScrollFraction = fraction
         }
     }
 
@@ -115,6 +133,25 @@ fun ReaderScreen(
         showTranslation && translationState is TranslationState.Done ->
             (translationState as TranslationState.Done).translation
         else -> chapter?.content ?: ""
+    }
+
+    LaunchedEffect(chapter?.id, pendingScrollFraction, displayText) {
+        val fraction = pendingScrollFraction ?: return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+        val maxIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+        val targetIndex = (maxIndex * fraction).roundToInt().coerceIn(0, maxIndex)
+        listState.scrollToItem(targetIndex)
+        pendingScrollFraction = null
+    }
+
+    // Save progress as the in-chapter scroll ratio.
+    LaunchedEffect(bookId, chapter?.id) {
+        val c = chapter ?: return@LaunchedEffect
+        snapshotFlow { calculateChapterScrollFraction(listState) }
+            .distinctUntilChanged()
+            .collect { progress ->
+                viewModel.saveProgress(bookId, c.id, c.chapterIndex, progress)
+            }
     }
 
     Box(
@@ -195,7 +232,10 @@ fun ReaderScreen(
             ReaderTopBar(
                 chapterTitle = chapter?.title ?: "",
                 isBookmarked = chapter?.isBookmarked ?: false,
-                onBack = onBack,
+                onBack = {
+                    saveCurrentProgress()
+                    onBack()
+                },
                 onChapterList = { showChapterList = true },
                 onToggleBookmark = { viewModel.toggleBookmark() },
                 onShare = {
@@ -223,8 +263,8 @@ fun ReaderScreen(
                 isTranslating = translationState is TranslationState.Translating,
                 showingTranslation = showTranslation,
                 isTtsPlaying = isTtsPlaying,
-                onPrevChapter = { viewModel.navigateChapter(-1) },
-                onNextChapter = { viewModel.navigateChapter(1) },
+                onPrevChapter = { viewModel.navigateChapter(-1, calculateChapterScrollFraction(listState)) },
+                onNextChapter = { viewModel.navigateChapter(1, calculateChapterScrollFraction(listState)) },
                 onSeek = { index ->
                     val c = chapters.getOrNull(index)
                     c?.let { viewModel.openChapter(it) }
@@ -266,6 +306,7 @@ fun ReaderScreen(
             onFontFamilyChange = viewModel::updateFontFamily,
             onBackgroundChange = viewModel::updateBackground,
             onDarkModeChange = viewModel::updateDarkMode,
+            onLineSpacingChange = viewModel::updateLineSpacing,
             onDismiss = { showSettingsSheet = false }
         )
     }
@@ -289,6 +330,22 @@ fun getFontFamily(name: String): FontFamily = when (name) {
     "serif"     -> FontFamily.Serif
     "monospace" -> FontFamily.Monospace
     else        -> FontFamily.Default
+}
+
+private fun calculateChapterScrollFraction(listState: LazyListState): Float {
+    val totalItems = listState.layoutInfo.totalItemsCount
+    if (totalItems <= 1) return 0f
+
+    val currentItem = listState.layoutInfo.visibleItemsInfo
+        .firstOrNull { it.index == listState.firstVisibleItemIndex }
+    val itemFraction = if (currentItem != null && currentItem.size > 0) {
+        listState.firstVisibleItemScrollOffset.toFloat() / currentItem.size.toFloat()
+    } else {
+        0f
+    }
+
+    return ((listState.firstVisibleItemIndex + itemFraction) / (totalItems - 1).toFloat())
+        .coerceIn(0f, 1f)
 }
 
 // ============================================================
@@ -409,6 +466,7 @@ fun ReaderSettingsSheet(
     onFontFamilyChange: (String) -> Unit,
     onBackgroundChange: (ReaderBackground) -> Unit,
     onDarkModeChange: (Boolean) -> Unit,
+    onLineSpacingChange: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -461,6 +519,20 @@ fun ReaderSettingsSheet(
                             .clickable { onBackgroundChange(bg) }
                     )
                 }
+            }
+
+            // Line spacing
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Giãn dòng", modifier = Modifier.weight(1f))
+                    Text(String.format("%.1fx", settings.lineSpacing), fontSize = 13.sp)
+                }
+                Slider(
+                    value = settings.lineSpacing,
+                    onValueChange = onLineSpacingChange,
+                    valueRange = 1.2f..2.4f,
+                    steps = 5
+                )
             }
 
             // Dark mode

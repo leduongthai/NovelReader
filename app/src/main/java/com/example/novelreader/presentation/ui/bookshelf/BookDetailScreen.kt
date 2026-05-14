@@ -1,5 +1,8 @@
 package com.example.novelreader.presentation.ui.bookshelf
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,6 +37,20 @@ fun BookDetailScreen(
     val chapters by viewModel.chapters.collectAsState()
     val saveState by viewModel.saveState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val coverLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            viewModel.updateBookCover(it.toString())
+        }
+    }
 
     // Form state — khởi tạo từ book khi book load xong
     var editTitle by remember { mutableStateOf("") }
@@ -103,15 +121,25 @@ fun BookDetailScreen(
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         // Ảnh bìa
-                        AsyncImage(
-                            model = b.coverUrl.ifBlank { null },
-                            contentDescription = b.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .width(110.dp)
-                                .aspectRatio(0.7f)
-                                .clip(RoundedCornerShape(8.dp))
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            AsyncImage(
+                                model = b.coverUrl.ifBlank { null },
+                                contentDescription = b.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(110.dp)
+                                    .aspectRatio(0.7f)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                            TextButton(
+                                onClick = { coverLauncher.launch(arrayOf("image/*")) },
+                                contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) {
+                                Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Đổi bìa", fontSize = 12.sp)
+                            }
+                        }
 
                         Column(modifier = Modifier.weight(1f)) {
                             if (isEditing) {

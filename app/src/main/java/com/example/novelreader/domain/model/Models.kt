@@ -147,12 +147,24 @@ data class SharedNovel(
     val uploadedAt: Long = System.currentTimeMillis()
 )
 
+data class CommunityComment(
+    val id: String = "",
+    val targetType: String = "",
+    val targetId: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val userAvatar: String = "",
+    val content: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 data class ReaderSettings(
     val fontSize: Float = 18f,
     val fontFamily: String = "default",
     val lineSpacing: Float = 1.6f,
     val backgroundColor: ReaderBackground = ReaderBackground.PAPER,
     val isDarkMode: Boolean = false,
+    val autoOpenLastBook: Boolean = false,
     val geminiApiKey: String = "",
     val translationPrompt: String = DEFAULT_TRANSLATION_PROMPT,
     val ttsSpeed: Float = 1.0f
@@ -176,15 +188,6 @@ enum class ReaderBackground(val bg: Long, val text: Long) {
     DARK(0xFF1A1A2E, 0xFFE0E0E0),
     BLACK(0xFF000000, 0xFFCCCCCC)
 }
-
-data class ChatGroup(
-    val id: String = "",
-    val name: String = "",
-    val description: String = "",
-    val adminId: String = "",
-    val members: List<String> = emptyList(),
-    val createdAt: Long = System.currentTimeMillis()
-)
 
 const val DEFAULT_TRANSLATION_PROMPT = """Bạn là một dịch giả chuyên nghiệp chuyên dịch truyện từ tiếng Trung/Anh/Nhật sang tiếng Việt.
 
