@@ -33,6 +33,7 @@ data class ChapterEntity(
     @PrimaryKey val id: String,
     val bookId: String,
     val title: String,
+    val translatedTitle: String = "",
     val content: String,
     val translatedContent: String = "",
     val chapterIndex: Int,

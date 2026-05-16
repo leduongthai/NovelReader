@@ -207,7 +207,9 @@ fun BookshelfScreen(
                     LastReadBanner(
                         book = book,
                         history = lastRead!!,
-                        onClick = { onOpenReader(book.id, lastRead.chapterIndex) }
+                        onClick = { onOpenReader(book.id, lastRead.chapterIndex) },
+                        onDelete = { viewModel.deleteBook(book.id) },
+                        onOpenDetail = { onOpenDetail(book.id) }
                     )
                 }
             }
@@ -270,7 +272,14 @@ fun BookshelfScreen(
 // ---- Last Read Banner ----
 
 @Composable
-fun LastReadBanner(book: Book, history: ReadingHistory, onClick: () -> Unit) {
+fun LastReadBanner(
+    book: Book,
+    history: ReadingHistory,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onOpenDetail: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -300,6 +309,29 @@ fun LastReadBanner(book: Book, history: ReadingHistory, onClick: () -> Unit) {
                     )
                     Text("${(history.scrollPosition * 100).roundToInt()}%",
                         fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            Box(modifier = Modifier.padding(top = 4.dp, end = 4.dp)) {
+                IconButton(onClick = { showMenu = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.MoreVert, "Tùy chọn truyện")
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Thông tin truyện") },
+                        onClick = {
+                            showMenu = false
+                            onOpenDetail()
+                        },
+                        leadingIcon = { Icon(Icons.Default.Info, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Xóa truyện") },
+                        onClick = {
+                            showMenu = false
+                            onDelete()
+                        },
+                        leadingIcon = { Icon(Icons.Default.Delete, null) }
+                    )
                 }
             }
         }

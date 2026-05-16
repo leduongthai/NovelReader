@@ -25,6 +25,7 @@ data class Chapter(
     val id: String = "",
     val bookId: String = "",
     val title: String = "",
+    val translatedTitle: String = "",
     val content: String = "",
     val translatedContent: String = "",
     val chapterIndex: Int = 0,
@@ -32,6 +33,11 @@ data class Chapter(
     val isLoaded: Boolean = false,
     val isBookmarked: Boolean = false
 ) : Parcelable
+
+data class ChapterTranslation(
+    val title: String = "",
+    val content: String = ""
+)
 
 data class ReadingHistory(
     val id: String = "",
@@ -48,6 +54,7 @@ data class Prompt(
     val content: String = "",
     val authorId: String = "",
     val authorName: String = "",
+    val authorAvatar: String = "",
     val likes: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val isLikedByMe: Boolean = false
@@ -141,6 +148,7 @@ data class SharedNovel(
     val title: String = "",
     val uploaderName: String = "",
     val uploaderId: String = "",
+    val uploaderAvatar: String = "",
     val fileUrl: String = "",
     val fileSize: Long = 0,
     val downloadCount: Int = 0,

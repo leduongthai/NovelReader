@@ -31,6 +31,8 @@ class CommunityRepository @Inject constructor(
         private const val COMMENTS_NODE          = "community/comments"
         private const val USERS_NODE             = "users"
         private const val CHAT_MESSAGE_LIMIT     = 100
+        private const val MAX_AVATAR_SIZE_BYTES  = 180_000
+        private const val MAX_AVATAR_DATA_CHARS  = 260_000
         private const val MAX_FILE_SIZE_BYTES    = 900_000  // ~900 KB — an toàn dưới giới hạn 1MB của RTDB
     }
 
@@ -196,6 +198,7 @@ class CommunityRepository @Inject constructor(
             "title"      to title,
             "content"    to content,
             "authorId"   to user.uid,
+            "authorAvatar" to (userData?.avatarUrl ?: ""),
             "authorName" to (userData?.name ?: "Ẩn danh"),
             "likes"      to 0,
             "createdAt"  to System.currentTimeMillis()
@@ -286,6 +289,7 @@ class CommunityRepository @Inject constructor(
             title        = title,
             uploaderName = userData?.name ?: "Ẩn danh",
             uploaderId   = user.uid,
+            uploaderAvatar = userData?.avatarUrl ?: "",
             fileUrl      = id,              // dùng id làm key tra cứu content
             fileSize     = fileBytes.size.toLong(),
             uploadedAt   = System.currentTimeMillis()
@@ -496,6 +500,24 @@ class CommunityRepository @Inject constructor(
         database.reference.child(USERS_NODE).child(uid).updateChildren(updates).await()
     }
 
+    suspend fun uploadAvatar(fileBytes: ByteArray, contentType: String?): Result<String> = runCatching {
+        currentUserId ?: throw Exception("Bạn cần đăng nhập để đổi ảnh đại diện")
+        checkNotBanned()
+        if (fileBytes.isEmpty()) throw Exception("Ảnh đại diện rỗng")
+        if (fileBytes.size > MAX_AVATAR_SIZE_BYTES) {
+            throw Exception("Ảnh quá lớn. Ứng dụng chỉ lưu avatar nhỏ trên Realtime Database.")
+        }
+
+        val mimeType = contentType
+            ?.takeIf { it.startsWith("image/", ignoreCase = true) }
+            ?: "image/jpeg"
+        val dataUrl = "data:$mimeType;base64,${Base64.encodeToString(fileBytes, Base64.NO_WRAP)}"
+        if (dataUrl.length > MAX_AVATAR_DATA_CHARS) {
+            throw Exception("Avatar image is still too large after compression")
+        }
+        dataUrl
+    }
+
     // =========================================================
     // FIREBASE SNAPSHOT MAPPERS
     // =========================================================
@@ -521,6 +543,7 @@ class CommunityRepository @Inject constructor(
             title      = child("title").getValue(String::class.java) ?: "",
             content    = child("content").getValue(String::class.java) ?: "",
             authorId   = child("authorId").getValue(String::class.java) ?: "",
+            authorAvatar = child("authorAvatar").getValue(String::class.java) ?: "",
             authorName = child("authorName").getValue(String::class.java) ?: "",
             likes      = child("likes").getValue(Int::class.java) ?: 0,
             createdAt  = child("createdAt").getValue(Long::class.java) ?: 0L
@@ -533,6 +556,7 @@ class CommunityRepository @Inject constructor(
             title         = child("title").getValue(String::class.java) ?: "",
             uploaderName  = child("uploaderName").getValue(String::class.java) ?: "",
             uploaderId    = child("uploaderId").getValue(String::class.java) ?: "",
+            uploaderAvatar = child("uploaderAvatar").getValue(String::class.java) ?: "",
             fileUrl       = child("fileUrl").getValue(String::class.java) ?: "",
             fileSize      = child("fileSize").getValue(Long::class.java) ?: 0L,
             downloadCount = child("downloadCount").getValue(Int::class.java) ?: 0,
@@ -614,6 +638,7 @@ class CommunityRepository @Inject constructor(
         "title"         to title,
         "uploaderName"  to uploaderName,
         "uploaderId"    to uploaderId,
+        "uploaderAvatar" to uploaderAvatar,
         "fileUrl"       to fileUrl,
         "fileSize"      to fileSize,
         "downloadCount" to downloadCount,
