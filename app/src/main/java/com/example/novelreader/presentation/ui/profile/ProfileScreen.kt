@@ -1,6 +1,7 @@
 package com.example.novelreader.presentation.ui.profile
 
-import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -33,9 +34,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
 import com.example.novelreader.domain.model.*
+import com.example.novelreader.presentation.ui.components.AvatarImage
 import com.example.novelreader.presentation.viewmodel.*
+import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 // ============================================================
 // PROFILE SCREEN
@@ -88,6 +91,7 @@ fun ProfileScreen(
                     onSaveApiKey   = viewModel::saveApiKey,
                     onSavePrompt   = viewModel::saveTranslationPrompt,
                     onUpdateProfile = viewModel::updateProfile,
+                    onUpdateAvatar = viewModel::updateProfileAvatar,
                     adminViewModel  = adminViewModel
                 )
             } else {
@@ -255,11 +259,16 @@ fun LoggedInProfile(
     onSaveApiKey: (String) -> Unit,
     onSavePrompt: (String) -> Unit,
     onUpdateProfile: (String, String) -> Unit,
+    onUpdateAvatar: (String, ByteArray, String?) -> Unit,
     adminViewModel: AdminViewModel
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         // --- Header Avatar + Info ---
-        UserHeader(user = user, onUpdateProfile = onUpdateProfile)
+        UserHeader(
+            user = user,
+            onUpdateProfile = onUpdateProfile,
+            onUpdateAvatar = onUpdateAvatar
+        )
 
         HorizontalDivider()
 
@@ -285,7 +294,11 @@ fun LoggedInProfile(
 // ============================================================
 
 @Composable
-fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
+fun UserHeader(
+    user: User?,
+    onUpdateProfile: (String, String) -> Unit,
+    onUpdateAvatar: (String, ByteArray, String?) -> Unit
+) {
     var showEditDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val avatarLauncher = rememberLauncherForActivityResult(
@@ -293,13 +306,17 @@ fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
     ) { uri ->
         val currentName = user?.name.orEmpty()
         if (uri != null && currentName.isNotBlank()) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+            if (bytes != null) {
+                val compressed = compressAvatarForRealtimeDatabase(bytes)
+                onUpdateAvatar(
+                    currentName,
+                    compressed ?: bytes,
+                    if (compressed != null) "image/jpeg" else context.contentResolver.getType(uri)
                 )
             }
-            onUpdateProfile(currentName, uri.toString())
         }
     }
 
@@ -307,27 +324,12 @@ fun UserHeader(user: User?, onUpdateProfile: (String, String) -> Unit) {
         modifier = Modifier.padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Avatar
-        Box(
-            modifier = Modifier.size(64.dp).clip(CircleShape)
-                .background(roleBgColor(user?.userRole)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!user?.avatarUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = user?.avatarUrl,
-                    contentDescription = user?.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Text(
-                    text = user?.name?.take(1)?.uppercase() ?: "?",
-                    fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-            }
-        }
+        AvatarImage(
+            avatarUrl = user?.avatarUrl,
+            displayName = user?.name,
+            backgroundColor = roleBgColor(user?.userRole),
+            modifier = Modifier.size(64.dp)
+        )
 
         Spacer(Modifier.width(16.dp))
 
@@ -1121,4 +1123,37 @@ fun LegacyReaderSettingsSection() {
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+private const val AVATAR_DATABASE_MAX_SIDE = 512
+private const val AVATAR_DATABASE_MAX_BYTES = 170_000
+
+private fun compressAvatarForRealtimeDatabase(rawBytes: ByteArray): ByteArray? {
+    val source = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return null
+    val longestSide = maxOf(source.width, source.height)
+    val scaled = if (longestSide > AVATAR_DATABASE_MAX_SIDE) {
+        val scale = AVATAR_DATABASE_MAX_SIDE.toFloat() / longestSide.toFloat()
+        Bitmap.createScaledBitmap(
+            source,
+            (source.width * scale).roundToInt().coerceAtLeast(1),
+            (source.height * scale).roundToInt().coerceAtLeast(1),
+            true
+        )
+    } else {
+        source
+    }
+
+    val output = ByteArrayOutputStream()
+    var quality = 84
+    var result: ByteArray
+    do {
+        output.reset()
+        scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)
+        result = output.toByteArray()
+        quality -= 8
+    } while (result.size > AVATAR_DATABASE_MAX_BYTES && quality >= 44)
+
+    if (scaled !== source) scaled.recycle()
+    source.recycle()
+    return result.takeIf { it.size <= AVATAR_DATABASE_MAX_BYTES }
 }

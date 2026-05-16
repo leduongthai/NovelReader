@@ -63,6 +63,9 @@ fun ReaderScreen(
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showChapterList by remember { mutableStateOf(false) }
     var showTranslation by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val translatedContent = chapter?.translatedContent.orEmpty()
+    val hasTranslation = translatedContent.isNotBlank()
 
     // TTS engine
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -117,9 +120,19 @@ fun ReaderScreen(
     }
 
     LaunchedEffect(translationState) {
-        if (translationState is TranslationState.Done) {
-            showTranslation = true
+        when (val state = translationState) {
+            is TranslationState.Done -> {
+                if (state.chapterId == chapter?.id && chapter?.translatedContent?.isNotBlank() == true) {
+                    showTranslation = true
+                }
+            }
+            is TranslationState.Error -> snackbarHostState.showSnackbar(state.message)
+            else -> Unit
         }
+    }
+
+    LaunchedEffect(chapter?.id) {
+        showTranslation = chapter?.translatedContent?.isNotBlank() == true
     }
 
     LaunchedEffect(Unit) {
@@ -129,11 +142,14 @@ fun ReaderScreen(
     }
 
     // Determine text to display
-    val displayText = when {
-        showTranslation && translationState is TranslationState.Done ->
-            (translationState as TranslationState.Done).translation
-        else -> chapter?.content ?: ""
-    }
+    val displayTitle = chapter?.let { current ->
+        if (showTranslation && hasTranslation) {
+            current.translatedTitle.ifBlank { current.title }
+        } else {
+            current.title
+        }
+    }.orEmpty()
+    val displayText = if (showTranslation && hasTranslation) translatedContent else chapter?.content.orEmpty()
 
     LaunchedEffect(chapter?.id, pendingScrollFraction, displayText) {
         val fraction = pendingScrollFraction ?: return@LaunchedEffect
@@ -187,7 +203,7 @@ fun ReaderScreen(
                     item {
                         chapter?.let { c ->
                             Text(
-                                text = c.title,
+                                text = displayTitle.ifBlank { c.title },
                                 style = TextStyle(
                                     color = textColor,
                                     fontSize = (settings.fontSize + 4).sp,
@@ -230,7 +246,7 @@ fun ReaderScreen(
             exit = fadeOut() + slideOutVertically()
         ) {
             ReaderTopBar(
-                chapterTitle = chapter?.title ?: "",
+                chapterTitle = displayTitle.ifBlank { chapter?.title.orEmpty() },
                 isBookmarked = chapter?.isBookmarked ?: false,
                 onBack = {
                     saveCurrentProgress()
@@ -261,6 +277,7 @@ fun ReaderScreen(
                 currentChapterIndex = chapter?.chapterIndex ?: 0,
                 totalChapters = chapters.size,
                 isTranslating = translationState is TranslationState.Translating,
+                hasTranslation = hasTranslation,
                 showingTranslation = showTranslation,
                 isTtsPlaying = isTtsPlaying,
                 onPrevChapter = { viewModel.navigateChapter(-1, calculateChapterScrollFraction(listState)) },
@@ -270,8 +287,14 @@ fun ReaderScreen(
                     c?.let { viewModel.openChapter(it) }
                 },
                 onTranslate = {
-                    viewModel.translateCurrentChapter()
-                    if (translationState is TranslationState.Done) showTranslation = !showTranslation
+                    if (hasTranslation) {
+                        showTranslation = !showTranslation
+                    } else {
+                        viewModel.translateCurrentChapter()
+                    }
+                },
+                onRetranslate = {
+                    viewModel.translateCurrentChapter(force = true)
                 },
                 onTts = {
                     if (isTtsPlaying) {
@@ -289,13 +312,35 @@ fun ReaderScreen(
 
         // Translation state indicator
         if (translationState is TranslationState.Translating) {
-            LinearProgressIndicator(
+            Surface(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .padding(top = 56.dp)
-            )
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 6.dp,
+                shadowElevation = 10.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text("Dang dich chuong...", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 88.dp)
+        )
     }
 
     // ---- Settings Bottom Sheet ----
@@ -383,12 +428,14 @@ fun ReaderBottomBar(
     currentChapterIndex: Int,
     totalChapters: Int,
     isTranslating: Boolean,
+    hasTranslation: Boolean,
     showingTranslation: Boolean,
     isTtsPlaying: Boolean,
     onPrevChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onSeek: (Int) -> Unit,
     onTranslate: () -> Unit,
+    onRetranslate: () -> Unit,
     onTts: () -> Unit,
     onChapterList: () -> Unit,
     onSettings: () -> Unit
@@ -447,6 +494,11 @@ fun ReaderBottomBar(
                             tint = if (showingTranslation) MaterialTheme.colorScheme.primary
                             else LocalContentColor.current
                         )
+                    }
+                }
+                if (hasTranslation) {
+                    IconButton(onClick = onRetranslate, enabled = !isTranslating) {
+                        Icon(Icons.Default.Refresh, "Dich lai")
                     }
                 }
                 // Settings

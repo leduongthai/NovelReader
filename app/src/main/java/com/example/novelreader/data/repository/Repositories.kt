@@ -151,10 +151,21 @@ class ChapterRepositoryImpl @Inject constructor(
         chapter: Chapter,
         prompt: String,
         apiKey: String
-    ): Result<String> {
-        return geminiService.translateChapter(chapter.content, prompt, apiKey)
+    ): Result<ChapterTranslation> {
+        return geminiService.translateChapter(chapter.title, chapter.content, prompt, apiKey)
             .onSuccess { translation ->
-                chapterDao.updateTranslation(chapter.id, translation)
+                chapterDao.updateTranslation(chapter.id, translation.title, translation.content)
+            }
+    }
+
+    override suspend fun translateChapterTitle(
+        chapter: Chapter,
+        prompt: String,
+        apiKey: String
+    ): Result<String> {
+        return geminiService.translateChapterTitle(chapter.title, prompt, apiKey)
+            .onSuccess { translatedTitle ->
+                chapterDao.updateTranslation(chapter.id, translatedTitle, chapter.translatedContent)
             }
     }
 
@@ -183,6 +194,7 @@ fun Book.toEntity() = BookEntity(
 
 fun ChapterEntity.toDomain() = Chapter(
     id = id, bookId = bookId, title = title,
+    translatedTitle = translatedTitle,
     content = content, translatedContent = translatedContent,
     chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded,
     isBookmarked = isBookmarked
@@ -190,6 +202,7 @@ fun ChapterEntity.toDomain() = Chapter(
 
 fun Chapter.toEntity() = ChapterEntity(
     id = id, bookId = bookId, title = title,
+    translatedTitle = translatedTitle,
     content = content, translatedContent = translatedContent,
     chapterIndex = chapterIndex, sourceUrl = sourceUrl, isLoaded = isLoaded,
     isBookmarked = isBookmarked

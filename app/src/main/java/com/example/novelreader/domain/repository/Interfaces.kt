@@ -23,6 +23,7 @@ interface ChapterRepository {
     suspend fun getChapterById(id: String): Chapter?
     suspend fun getChapterByIndex(bookId: String, index: Int): Chapter?
     suspend fun ensureContentLoaded(chapter: Chapter): Result<Chapter>
-    suspend fun translateChapter(chapter: Chapter, prompt: String, apiKey: String): Result<String>
+    suspend fun translateChapter(chapter: Chapter, prompt: String, apiKey: String): Result<ChapterTranslation>
+    suspend fun translateChapterTitle(chapter: Chapter, prompt: String, apiKey: String): Result<String>
     suspend fun toggleBookmark(chapterId: String, bookmarked: Boolean)
 }

@@ -275,13 +275,21 @@ class ReaderViewModel @Inject constructor(
 
     fun loadBook(bookId: String) {
         viewModelScope.launch {
-            chapterRepo.getChaptersByBook(bookId).collect { _chapters.value = it }
+            chapterRepo.getChaptersByBook(bookId).collect { loadedChapters ->
+                _chapters.value = loadedChapters
+                _currentChapter.value?.let { current ->
+                    loadedChapters.firstOrNull { it.id == current.id }?.let { refreshed ->
+                        _currentChapter.value = refreshed
+                    }
+                }
+            }
         }
     }
 
     fun openChapter(chapter: Chapter, targetScrollFraction: Float = 0f) {
         viewModelScope.launch {
             _readerState.value = ReaderUiState.Loading
+            _translationState.value = TranslationState.Idle
             chapterRepo.ensureContentLoaded(chapter)
                 .onSuccess {
                     _currentChapter.value = it
@@ -300,7 +308,7 @@ class ReaderViewModel @Inject constructor(
         next?.let { openChapter(it, currentScrollFraction) }
     }
 
-    fun translateCurrentChapter() {
+    fun translateCurrentChapter(force: Boolean = false) {
         val chapter = _currentChapter.value ?: return
         val apiKey = _settings.value.geminiApiKey
         val prompt = _settings.value.translationPrompt
@@ -310,21 +318,47 @@ class ReaderViewModel @Inject constructor(
             return
         }
 
-        if (chapter.translatedContent.isNotBlank()) {
-            _translationState.value = TranslationState.Done(chapter.translatedContent)
+        if (!force && chapter.translatedContent.isNotBlank() && chapter.translatedTitle.isNotBlank()) {
+            _translationState.value = TranslationState.Done(chapter.id)
             return
         }
 
         viewModelScope.launch {
             _translationState.value = TranslationState.Translating
+            if (!force && chapter.translatedContent.isNotBlank()) {
+                chapterRepo.translateChapterTitle(chapter, prompt, apiKey)
+                    .onSuccess { translatedTitle ->
+                        val translatedChapter = chapter.copy(translatedTitle = translatedTitle)
+                        updateTranslatedChapter(chapter.id, translatedChapter)
+                        _translationState.value = TranslationState.Done(chapter.id)
+                    }
+                    .onFailure {
+                        _translationState.value = TranslationState.Error(it.message ?: "Lỗi dịch")
+                    }
+                return@launch
+            }
+
             chapterRepo.translateChapter(chapter, prompt, apiKey)
                 .onSuccess { translation ->
-                    _currentChapter.value = chapter.copy(translatedContent = translation)
-                    _translationState.value = TranslationState.Done(translation)
+                    val translatedChapter = chapter.copy(
+                        translatedTitle = translation.title,
+                        translatedContent = translation.content
+                    )
+                    updateTranslatedChapter(chapter.id, translatedChapter)
+                    _translationState.value = TranslationState.Done(chapter.id)
                 }
                 .onFailure {
                     _translationState.value = TranslationState.Error(it.message ?: "Lỗi dịch")
                 }
+        }
+    }
+
+    private fun updateTranslatedChapter(chapterId: String, translatedChapter: Chapter) {
+        _chapters.value = _chapters.value.map {
+            if (it.id == chapterId) translatedChapter else it
+        }
+        if (_currentChapter.value?.id == chapterId) {
+            _currentChapter.value = translatedChapter
         }
     }
 
@@ -347,7 +381,7 @@ class ReaderViewModel @Inject constructor(
     fun updateDarkMode(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[IS_DARK_MODE] = enabled } }
     fun updateLineSpacing(value: Float) = viewModelScope.launch { dataStore.edit { it[LINE_SPACING] = value } }
     fun updateAutoOpenLastBook(enabled: Boolean) = viewModelScope.launch { dataStore.edit { it[AUTO_OPEN_LAST_BOOK] = enabled } }
-    fun updateApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[GEMINI_API_KEY] = key } }
+    fun updateApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[GEMINI_API_KEY] = key.trim() } }
     fun updateTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[TRANSLATION_PROMPT] = prompt } }
 
     fun toggleBookmark() {
@@ -372,7 +406,7 @@ sealed class ReaderUiState {
 sealed class TranslationState {
     object Idle : TranslationState()
     object Translating : TranslationState()
-    data class Done(val translation: String) : TranslationState()
+    data class Done(val chapterId: String) : TranslationState()
     data class Error(val message: String) : TranslationState()
 }
 
@@ -601,7 +635,40 @@ class ProfileViewModel @Inject constructor(
             }
     }
 
-    fun saveApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key } }
+    fun updateProfileAvatar(name: String, fileBytes: ByteArray, contentType: String?) = viewModelScope.launch {
+        if (name.isBlank()) {
+            _profileAction.value = ProfileActionState.Error("Tên không được trống")
+            return@launch
+        }
+        _profileAction.value = ProfileActionState.Loading
+        communityRepo.uploadAvatar(fileBytes, contentType)
+            .fold(
+                onSuccess = { remoteUrl ->
+                    communityRepo.updateProfile(name, remoteUrl)
+                        .onSuccess {
+                            _currentUser.value = _currentUser.value?.copy(
+                                name = name.trim(),
+                                avatarUrl = remoteUrl
+                            )
+                            _profileAction.value = ProfileActionState.Success("Đã cập nhật ảnh đại diện")
+                            kotlinx.coroutines.delay(100)
+                            _profileAction.value = ProfileActionState.Idle
+                        }
+                        .onFailure {
+                            _profileAction.value = ProfileActionState.Error(it.message ?: "Cập nhật ảnh thất bại")
+                            kotlinx.coroutines.delay(100)
+                            _profileAction.value = ProfileActionState.Idle
+                        }
+                },
+                onFailure = {
+                    _profileAction.value = ProfileActionState.Error(it.message ?: "Tải ảnh thất bại")
+                    kotlinx.coroutines.delay(100)
+                    _profileAction.value = ProfileActionState.Idle
+                }
+            )
+    }
+
+    fun saveApiKey(key: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.GEMINI_API_KEY] = key.trim() } }
     fun saveTranslationPrompt(prompt: String) = viewModelScope.launch { dataStore.edit { it[ReaderViewModel.TRANSLATION_PROMPT] = prompt } }
     fun saveFontSize(size: Float) = viewModelScope.launch {
         dataStore.edit { it[ReaderViewModel.FONT_SIZE] = size.coerceIn(12f, 36f) }

@@ -59,8 +59,8 @@ interface ChapterDao {
     suspend fun insertChapters(chapters: List<ChapterEntity>)
 
     // Update only translated content — avoids overwriting original
-    @Query("UPDATE chapters SET translatedContent = :translation WHERE id = :chapterId")
-    suspend fun updateTranslation(chapterId: String, translation: String)
+    @Query("UPDATE chapters SET translatedTitle = :translatedTitle, translatedContent = :translatedContent WHERE id = :chapterId")
+    suspend fun updateTranslation(chapterId: String, translatedTitle: String, translatedContent: String)
 
     // Mark chapter content as loaded (for crawled chapters)
     @Query("UPDATE chapters SET content = :content, isLoaded = 1 WHERE id = :chapterId")
