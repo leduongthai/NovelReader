@@ -108,41 +108,12 @@ UI Compose -> ViewModel -> Repository interface -> Repository implementation -> 
 - Thiết bị hoặc emulator Android API 26 trở lên
 - Firebase project có Authentication và Realtime Database
 
-Nếu terminal chưa nhận JDK 17, có thể đặt:
-
-```powershell
-$env:JAVA_HOME='C:\Program Files\Java\jdk-17.0.19'
-$env:Path="$env:JAVA_HOME\bin;$env:Path"
-```
-
-## Cấu hình Firebase
-
-1. Tạo hoặc mở Firebase project.
-2. Bật Authentication bằng Email/Password.
-3. Tạo Realtime Database.
-4. Dán rules trong `firebase/database.rules.json`.
-5. Tải `google-services.json` của Android app package `com.example.novelreader`.
-6. Đặt file tại:
-
-```text
-app/google-services.json
-```
-
-Chi tiết bổ sung nằm trong `docs/firebase-setup.md`.
-
 ## Chạy dự án
 
 Build debug:
 
 ```powershell
 .\gradlew.bat :app:assembleDebug
-```
-
-Cài APK debug lên emulator:
-
-```powershell
-$adb="$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-& $adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 Mở app:
