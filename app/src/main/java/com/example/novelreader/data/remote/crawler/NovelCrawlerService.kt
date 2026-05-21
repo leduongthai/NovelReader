@@ -8,755 +8,820 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+import java.io.IOException
 import java.net.URLEncoder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
-import okhttp3.Dns
-import java.net.InetAddress
-import java.io.IOException
-import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
-import javax.net.ssl.HttpsURLConnection
 
-// ============================================================
-// NGUỒN TRUYỆN — khớp với plugin VBook "5in1"
-// ============================================================
-
-enum class NovelSource(val label: String) {
-    STV("sangtacviet"),       // Proxy chính: sangtacviet.app
-    QIDIAN("qidian"),
-    SHU_69("69shu"),
-    PTWXZ("ptwxz"),
-    FANQIE("fanqie"),
-    QIMAO("qimao"),
-    UNKNOWN("unknown")
+enum class SourceGroup(val title: String) {
+    VIETNAMESE("Truyen Viet"),
+    CHINESE("Truyen Trung")
 }
 
-enum class DiscoverFeed(val title: String, val host: String, val sort: String) {
-    QIDIAN_WEEK("Qidian tuần", "qidian", "viewweek"),
-    QIDIAN_DAY("Qidian ngày", "qidian", "viewday"),
-    FANQIE_WEEK("Fanqie tuần", "fanqie", "viewweek")
+enum class NovelSource(val label: String, val group: SourceGroup) {
+    TRUYENFULL("truyenfull", SourceGroup.VIETNAMESE),
+    HAKO("hako", SourceGroup.VIETNAMESE),
+    TWKAN("twkan", SourceGroup.CHINESE),
+    HSZ_69("69hsz", SourceGroup.CHINESE),
+    TRXS("trxs", SourceGroup.CHINESE),
+    UNKNOWN("unknown", SourceGroup.CHINESE)
 }
 
-// Phát hiện nguồn từ URL (giống regexp trong plugin.json)
-fun detectSource(url: String): NovelSource = when {
-    url.contains("qidian.com")                          -> NovelSource.QIDIAN
-    url.contains("69shu") || url.contains("69shuba")   -> NovelSource.SHU_69
-    url.contains("piaotia") || url.contains("ptwxz") ||
-            url.contains("piaotian")                    -> NovelSource.PTWXZ
-    url.contains("fanqie")                              -> NovelSource.FANQIE
-    url.contains("qimao") || url.contains("api-bc.wtzw") ||
-            url.contains("api-ks.wtzw")                 -> NovelSource.QIMAO
-    url.contains("sangtac") || url.contains("14.225.254.182") -> NovelSource.STV
-    else                                                -> NovelSource.UNKNOWN
+enum class DiscoverFeed(
+    val title: String,
+    val group: SourceGroup,
+    val source: NovelSource,
+    val input: String,
+    val enabled: Boolean = true
+) {
+    VI_TRUYENFULL_NEW(
+        "TruyenFull moi",
+        SourceGroup.VIETNAMESE,
+        NovelSource.TRUYENFULL,
+        "https://truyenfull.today/danh-sach/truyen-moi/"
+    ),
+    VI_TRUYENFULL_HOT(
+        "TruyenFull hot",
+        SourceGroup.VIETNAMESE,
+        NovelSource.TRUYENFULL,
+        "https://truyenfull.today/danh-sach/truyen-hot/"
+    ),
+    VI_HAKO_UPDATED(
+        "Hako cap nhat",
+        SourceGroup.VIETNAMESE,
+        NovelSource.HAKO,
+        "https://docln.sbs/danh-sach?truyendich=1&sangtac=1&convert=1&dangtienhanh=1&tamngung=1&hoanthanh=1&sapxep=capnhat",
+        enabled = false
+    ),
+    VI_HAKO_TOP_MONTH(
+        "Hako top thang",
+        SourceGroup.VIETNAMESE,
+        NovelSource.HAKO,
+        "https://docln.sbs/danh-sach?truyendich=1&sangtac=1&convert=1&dangtienhanh=1&tamngung=1&hoanthanh=1&sapxep=topthang",
+        enabled = false
+    ),
+    ZH_TWKAN_ALL(
+        "Twkan tat ca",
+        SourceGroup.CHINESE,
+        NovelSource.TWKAN,
+        "/novels/full/0_{0}.html",
+        enabled = false
+    ),
+    ZH_TWKAN_FANTASY(
+        "Twkan huyen huyen",
+        SourceGroup.CHINESE,
+        NovelSource.TWKAN,
+        "/novels/full/1_{0}.html",
+        enabled = false
+    ),
+    ZH_69HSZ_HOME(
+        "69hsz goi y",
+        SourceGroup.CHINESE,
+        NovelSource.HSZ_69,
+        "https://www.69hsw.com/"
+    ),
+    ZH_TRXS_TONGREN(
+        "TRXS dong nhan",
+        SourceGroup.CHINESE,
+        NovelSource.TRXS,
+        "https://trxs.cc/tongren/index.html"
+    )
 }
 
-// ============================================================
-// CRAWLER SERVICE
-// ============================================================
+fun detectSource(url: String): NovelSource {
+    val lower = url.lowercase()
+    return when {
+        lower.contains("truyenfull.") -> NovelSource.TRUYENFULL
+        lower.contains("docln.") || lower.contains("hako.") || lower.contains("ln.hako.") -> NovelSource.HAKO
+        lower.contains("twkan.com") -> NovelSource.TWKAN
+        lower.contains("69hsz.") || lower.contains("69hsw.") || lower.contains("69hao.") -> NovelSource.HSZ_69
+        lower.contains("trxs.") -> NovelSource.TRXS
+        else -> NovelSource.UNKNOWN
+    }
+}
 
 @Singleton
 class NovelCrawlerService @Inject constructor() {
-
     companion object {
         private const val TAG = "Crawler"
-        private const val TIMEOUT_S = 20L
+        private const val TIMEOUT_S = 25L
+        private const val TRUYENFULL_HOST = "https://truyenfull.today"
+        private const val HAKO_HOST = "https://docln.sbs"
+        private const val TWKAN_HOST = "https://twkan.com"
+        private const val TRXS_HOST = "https://trxs.cc"
 
-        // Host proxy chính (sangtacviet.app)
-        private const val STV_HOST = "https://sangtacviet.app"
-        private const val HOST_69 = "https://69shuba.com"
-        private const val HOST_PTWXZ = "https://www.piaotia.com"
-        private const val QIMAO_SECRET = "d3dGiJc651gSQ8w1"
-        private const val QIMAO_APP_VERSION = "71900"
-        private const val QIMAO_APPLICATION_ID = "com.kmxs.reader"
+        private const val HSZ69_HOST = "https://www.69hsw.com"
     }
 
-    // Thêm vào phần HTTP HELPERS cuối file
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .dns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> {
-                return if (hostname == "sangtacviet.app") {
-                    // Ép DNS cho sangtacviet.app về IP máy chủ trực tiếp
-                    listOf(InetAddress.getByName("14.225.254.182"))
-                } else {
-                    Dns.SYSTEM.lookup(hostname)
-                }
-            }
-        })
-        .hostnameVerifier { hostname, session ->
-            // Chỉ nới kiểm tra cho STV/IP; các host khác vẫn dùng verifier mặc định.
-            hostname == "sangtacviet.app" ||
-                    hostname == "14.225.254.182" ||
-                    HttpsURLConnection.getDefaultHostnameVerifier().verify(hostname, session)
-        }
+        .connectTimeout(TIMEOUT_S, TimeUnit.SECONDS)
+        .readTimeout(TIMEOUT_S, TimeUnit.SECONDS)
         .build()
 
-    private fun fetchHtmlViaOkHttp(url: String): Document {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", UA_DESKTOP)
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("Lỗi kết nối: ${response.code}")
-            val body = response.body?.string() ?: ""
-            return Jsoup.parse(body, url)
-        }
+    suspend fun discoverNovels(
+        page: Int = 1,
+        feed: DiscoverFeed = DiscoverFeed.VI_TRUYENFULL_NEW
+    ): Result<List<Book>> = withContext(Dispatchers.IO) {
+        runCatching {
+            when (feed.source) {
+                NovelSource.TRUYENFULL -> discoverTruyenFull(feed.input, page)
+                NovelSource.HAKO -> discoverHako(feed.input, page)
+                NovelSource.TWKAN -> discoverTwkan(feed.input, page)
+                NovelSource.HSZ_69 -> discover69hsz(feed.input, page)
+                NovelSource.TRXS -> discoverTrxs(page)
+                NovelSource.UNKNOWN -> emptyList()
+            }
+        }.onFailure { Log.e(TAG, "discoverNovels failed: ${it.message}", it) }
     }
 
-    // ----------------------------------------------------------
-    // TRANG CHỦ — danh sách truyện hot (Qidian qua STV proxy)
-    // ----------------------------------------------------------
-
-    suspend fun discoverNovels(page: Int = 1, feed: DiscoverFeed = DiscoverFeed.QIDIAN_WEEK): Result<List<Book>> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                // Dùng STV để lấy bảng xếp hạng/search proxy giống home.js + gen1.js
-                val url = "$STV_HOST/?find=&host=${feed.host}&minc=0&sort=${feed.sort}&step=1&tag=&p=$page"
-                val doc = fetchHtml(url)
-                parseSTVBookList(doc)
-            }.onFailure { Log.e(TAG, "discoverNovels failed: ${it.message}", it) }
-        }
-
-    // ----------------------------------------------------------
-    // TÌM KIẾM — search qua STV (giống search.js)
-    // ----------------------------------------------------------
-
-    suspend fun searchNovels(keyword: String, page: Int = 1): Result<List<Book>> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val encoded = URLEncoder.encode(keyword.trim(), "UTF-8")
-                val url = "$STV_HOST/?find=&findinname=$encoded&minc=0&tag=&p=$page"
-                val doc = fetchHtml(url)
-                parseSTVBookList(doc)
-            }.onFailure { Log.e(TAG, "searchNovels failed: ${it.message}", it) }
-        }
-
-    // ----------------------------------------------------------
-    // CHI TIẾT TRUYỆN + MỤC LỤC (detail.js + toc.js)
-    // ----------------------------------------------------------
+    suspend fun searchNovels(
+        keyword: String,
+        page: Int = 1,
+        feed: DiscoverFeed = DiscoverFeed.VI_TRUYENFULL_NEW
+    ): Result<List<Book>> = withContext(Dispatchers.IO) {
+        runCatching {
+            when (feed.source) {
+                NovelSource.TRUYENFULL -> searchTruyenFull(keyword, page)
+                NovelSource.HAKO -> searchHako(keyword, page)
+                NovelSource.TWKAN -> searchTwkan(keyword)
+                NovelSource.HSZ_69 -> search69hsz(keyword)
+                NovelSource.TRXS -> searchTrxs(keyword, page)
+                NovelSource.UNKNOWN -> emptyList()
+            }
+        }.onFailure { Log.e(TAG, "searchNovels failed: ${it.message}", it) }
+    }
 
     suspend fun fetchNovelDetail(detailUrl: String): Result<Pair<Book, List<Chapter>>> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val source = detectSource(detailUrl)
-                Log.d(TAG, "fetchNovelDetail source=$source url=$detailUrl")
-
-                when (source) {
-                    NovelSource.QIDIAN -> fetchDetailQidian(detailUrl)
-                    NovelSource.SHU_69 -> fetchDetail69shu(detailUrl)
-                    NovelSource.PTWXZ  -> fetchDetailPtwxz(detailUrl)
-                    NovelSource.QIMAO  -> fetchDetailQimao(detailUrl)
-                    else               -> fetchDetailSTV(normalizeStvUrl(detailUrl))
+                when (detectSource(detailUrl)) {
+                    NovelSource.TRUYENFULL -> fetchDetailTruyenFull(detailUrl)
+                    NovelSource.HAKO -> fetchDetailHako(detailUrl)
+                    NovelSource.TWKAN -> fetchDetailTwkan(detailUrl)
+                    NovelSource.HSZ_69 -> fetchDetail69hsz(detailUrl)
+                    NovelSource.TRXS -> fetchDetailTrxs(detailUrl)
+                    NovelSource.UNKNOWN -> throw IOException("Nguon truyen chua duoc ho tro: $detailUrl")
                 }
             }.onFailure { Log.e(TAG, "fetchNovelDetail failed: ${it.message}", it) }
         }
 
-    // ----------------------------------------------------------
-    // NỘI DUNG CHƯƠNG (chap.js)
-    // ----------------------------------------------------------
-
     suspend fun fetchChapterContent(chapterUrl: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val source = detectSource(chapterUrl)
-                Log.d(TAG, "fetchChapterContent source=$source url=$chapterUrl")
-
-                when (source) {
-                    NovelSource.QIDIAN -> fetchChapQidian(chapterUrl)
-                    NovelSource.SHU_69 -> fetchChap69shu(chapterUrl)
-                    NovelSource.PTWXZ  -> fetchChapPtwxz(chapterUrl)
-                    NovelSource.FANQIE -> fetchChapFanqie(chapterUrl)
-                    NovelSource.QIMAO  -> fetchChapQimao(chapterUrl)
-                    else               -> fetchChapSTV(chapterUrl)
+                when (detectSource(chapterUrl)) {
+                    NovelSource.TRUYENFULL -> fetchChapTruyenFull(chapterUrl)
+                    NovelSource.HAKO -> fetchChapHako(chapterUrl)
+                    NovelSource.TWKAN -> fetchChapTwkan(chapterUrl)
+                    NovelSource.HSZ_69 -> fetchChap69hsz(chapterUrl)
+                    NovelSource.TRXS -> fetchChapTrxs(chapterUrl)
+                    NovelSource.UNKNOWN -> throw IOException("Nguon chuong chua duoc ho tro: $chapterUrl")
                 }
             }.onFailure { Log.e(TAG, "fetchChapterContent failed: ${it.message}", it) }
         }
 
-    // ==========================================================
-    // PRIVATE — STV proxy (sangtacviet.app)
-    // ==========================================================
+    // ---------------------------------------------------------------------
+    // TruyenFull.today
+    // ---------------------------------------------------------------------
 
-    private fun normalizeStvUrl(url: String): String {
-        // Thay host bất kỳ bằng STV_HOST (giống plugin: url.replace(hostRegex, STVHOST))
-        val normalized = url.replace(
-            Regex("""^(?:https?://)?(?:[^@\n]+@)?(?:www\.)?([^:/\n?]+)"""),
-            STV_HOST
-        )
-        return if (normalized.endsWith("/")) normalized else "$normalized/"
+    private fun discoverTruyenFull(input: String, page: Int): List<Book> {
+        val url = "${input.trimEnd('/')}/trang-$page"
+        return parseTruyenFullList(fetchHtml(url))
     }
 
-    /** Parse danh sách truyện từ trang STV (search / ranking) */
-    private fun parseSTVBookList(doc: Document): List<Book> {
-        val books = mutableListOf<Book>()
-        doc.select("#searchviewdiv a.booksearch").forEach { el ->
-            val name = el.selectFirst(".searchbooktitle")?.text()?.trim()
-                ?.capitalizeWords() ?: return@forEach
-            val link = el.attr("href").ifBlank { return@forEach }
-            val cover = el.selectFirst("img")?.attr("src") ?: ""
-            val description = el.select("div > span.searchtag").lastOrNull()?.text() ?: ""
-            val fullLink = if (link.startsWith("http")) link
-                          else "$STV_HOST/${link.trimStart('/')}"
-            books.add(
+    private fun searchTruyenFull(keyword: String, page: Int): List<Book> {
+        val encoded = URLEncoder.encode(keyword.trim(), "UTF-8")
+        val url = "$TRUYENFULL_HOST/tim-kiem/?tukhoa=$encoded&page=$page"
+        return parseTruyenFullList(fetchHtml(url))
+    }
+
+    private fun parseTruyenFullList(doc: Document): List<Book> =
+        doc.select(".list-truyen div[itemscope]").mapNotNull { item ->
+            val link = item.selectFirst(".truyen-title > a")?.absHref("href").orEmpty()
+            val title = item.selectFirst(".truyen-title > a")?.text()?.trim().orEmpty()
+            if (link.isBlank() || title.isBlank()) return@mapNotNull null
+            val cover = item.selectFirst("[data-image]")?.attr("data-image")
+                ?.toAbsoluteUrl(TRUYENFULL_HOST).orEmpty()
+            Book(
+                id = uuidFrom(link),
+                title = title,
+                author = item.select(".author").text().trim(),
+                description = item.select(".text-info, .author").text().trim(),
+                coverUrl = cover,
+                source = "crawl:${NovelSource.TRUYENFULL.label}",
+                sourceUrl = link
+            )
+        }
+
+    private fun fetchDetailTruyenFull(detailUrl: String): Pair<Book, List<Chapter>> {
+        val url = normalizeHost(detailUrl, TRUYENFULL_HOST)
+        val doc = fetchHtml(url)
+        val bookId = uuidFrom(url)
+        val description = doc.selectFirst("div.desc-text")?.html()?.let(::htmlToReaderText).orEmpty()
+        val chapters = fetchTocTruyenFull(doc, bookId)
+        val book = Book(
+            id = bookId,
+            title = doc.selectFirst("h3.title")?.text()?.trim().orEmpty(),
+            author = doc.selectFirst("a[itemprop=author]")?.text()?.trim().orEmpty(),
+            description = description,
+            coverUrl = doc.selectFirst("div.book img")?.absHref("src").orEmpty(),
+            source = "crawl:${NovelSource.TRUYENFULL.label}",
+            sourceUrl = url,
+            totalChapters = chapters.size
+        )
+        return book to chapters
+    }
+
+    private fun fetchTocTruyenFull(doc: Document, bookId: String): List<Chapter> {
+        val storyId = doc.select("#truyen-id").attr("value")
+        val storyAscii = doc.select("#truyen-ascii").attr("value")
+        val totalPage = doc.select("#total-page").attr("value").toIntOrNull() ?: 1
+        val chapters = mutableListOf<Chapter>()
+
+        if (storyId.isNotBlank() && storyAscii.isNotBlank()) {
+            for (page in 1..totalPage.coerceAtLeast(1)) {
+                val url = "$TRUYENFULL_HOST/ajax.php?type=list_chapter&tid=$storyId&tascii=$storyAscii&page=$page&totalp=$totalPage"
+                val chapListHtml = JSONObject(rawGet(url)).optString("chap_list")
+                Jsoup.parse(chapListHtml, TRUYENFULL_HOST)
+                    .select(".list-chapter li a")
+                    .forEach { a ->
+                        val href = a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(TRUYENFULL_HOST) }
+                        chapters.add(chapterStub(bookId, a.text().trim(), href, chapters.size))
+                    }
+            }
+        }
+
+        if (chapters.isEmpty()) {
+            doc.select(".list-chapter li a, #list-chapter li a").forEach { a ->
+                val href = a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(TRUYENFULL_HOST) }
+                chapters.add(chapterStub(bookId, a.text().trim(), href, chapters.size))
+            }
+        }
+
+        return chapters.distinctBy { it.sourceUrl }.mapIndexed { index, chapter ->
+            chapter.copy(chapterIndex = index)
+        }
+    }
+
+    private fun fetchChapTruyenFull(url: String): String {
+        val doc = fetchHtml(normalizeHost(url, TRUYENFULL_HOST))
+        val content = doc.selectFirst("div.chapter-c") ?: return ""
+        content.select("script, style, noscript, iframe, a, div.ads-responsive, em").remove()
+        return htmlToReaderText(content.html())
+    }
+
+    // ---------------------------------------------------------------------
+    // Hako / docln.sbs
+    // ---------------------------------------------------------------------
+
+    private fun discoverHako(input: String, page: Int): List<Book> {
+        val separator = if (input.contains("?")) "&" else "?"
+        val url = "${normalizeHost(input, HAKO_HOST)}${separator}page=$page"
+        return parseHakoList(fetchHtml(url))
+    }
+
+    private fun searchHako(keyword: String, page: Int): List<Book> {
+        val encoded = URLEncoder.encode(keyword.trim(), "UTF-8")
+        return parseHakoList(fetchHtml("$HAKO_HOST/tim-kiem?keywords=$encoded&page=$page"))
+    }
+
+    private fun parseHakoList(doc: Document): List<Book> =
+        doc.select(".thumb-section-flow .thumb-item-flow, .sect-body .thumb-item-flow").mapNotNull { item ->
+            val link = item.selectFirst(".series-title a")?.absHref("href").orEmpty()
+            val title = item.selectFirst(".series-title a")?.text()?.trim().orEmpty()
+            if (link.isBlank() || title.isBlank()) return@mapNotNull null
+            Book(
+                id = uuidFrom(link),
+                title = title,
+                author = "",
+                description = item.selectFirst(".chapter-title")?.text()?.trim().orEmpty(),
+                coverUrl = item.selectFirst(".img-in-ratio")?.attr("data-bg")?.toAbsoluteUrl(HAKO_HOST).orEmpty(),
+                source = "crawl:${NovelSource.HAKO.label}",
+                sourceUrl = normalizeHost(link, HAKO_HOST)
+            )
+        }
+
+    private fun fetchDetailHako(detailUrl: String): Pair<Book, List<Chapter>> {
+        val url = normalizeHost(detailUrl, HAKO_HOST)
+        val doc = fetchHtml(url)
+        val bookId = uuidFrom(url)
+        val cover = doc.selectFirst(".series-cover .img-in-ratio")
+            ?.let { parseCssUrl(it.attr("style")) ?: it.attr("data-bg") }
+            ?.toAbsoluteUrl(HAKO_HOST).orEmpty()
+        val author = doc.select(".series-information .info-item").firstOrNull {
+            val label = it.select(".info-name").text()
+            label.contains("Tac", ignoreCase = true) || label.contains("Tác", ignoreCase = true)
+        }?.select(".info-value")?.text()?.trim().orEmpty()
+        val chapters = doc.select(".volume-list").flatMap { section ->
+            val volume = section.selectFirst(".sect-title")?.text()?.trim().orEmpty()
+            section.select(".list-chapters li").mapNotNull { item ->
+                val a = item.selectFirst(".chapter-name a") ?: return@mapNotNull null
+                val name = a.text().trim().ifBlank { "Chuong" }
+                val displayName = if (volume.isNotBlank() && item.elementSiblingIndex() == 0) "$volume $name" else name
+                chapterStub(bookId, displayName, a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(HAKO_HOST) }, 0)
+            }
+        }.mapIndexed { index, chapter -> chapter.copy(chapterIndex = index) }
+        val book = Book(
+            id = bookId,
+            title = doc.selectFirst(".series-name")?.text()?.trim().orEmpty(),
+            author = author,
+            description = doc.selectFirst(".summary-content")?.html()?.let(::htmlToReaderText).orEmpty(),
+            coverUrl = cover,
+            source = "crawl:${NovelSource.HAKO.label}",
+            sourceUrl = url,
+            totalChapters = chapters.size
+        )
+        return book to chapters
+    }
+
+    private fun fetchChapHako(chapterUrl: String): String {
+        val doc = fetchHtml(normalizeHost(chapterUrl, HAKO_HOST))
+        val container = doc.selectFirst("#chapter-content") ?: return ""
+        val protectedContent = decodeHakoProtectedContent(container)
+        container.select("script, style, iframe, p.none, .note-reg, img[src*=/images/banners/], img[src*=/lightnovel/banners/]").remove()
+        val raw = protectedContent ?: container.html()
+        return htmlToReaderText(
+            raw.replace(Regex("""<div id="chapter-c-protected"[\s\S]*?</div>"""), "")
+                .replace(Regex("""\[note\d+]"""), "")
+        )
+    }
+
+    private fun decodeHakoProtectedContent(container: Element): String? {
+        val protectedEl = container.selectFirst("#chapter-c-protected") ?: return null
+        val mode = protectedEl.attr("data-s").ifBlank { "none" }
+        val key = protectedEl.attr("data-k")
+        val chunks = JSONArray(protectedEl.attr("data-c").ifBlank { "[]" })
+        if (chunks.length() == 0) return null
+
+        val ordered = (0 until chunks.length())
+            .map { chunks.getString(it) }
+            .sortedBy { it.take(4).toIntOrNull() ?: 0 }
+
+        return ordered.joinToString("") { chunk ->
+            val part = chunk.drop(4)
+            when (mode) {
+                "xor_shuffle" -> xorDecodeBase64(part, key)
+                "base64_reverse" -> decodeBase64ToUtf8(part.reversed())
+                else -> decodeBase64ToUtf8(part)
+            }
+        }
+    }
+
+    private fun xorDecodeBase64(value: String, key: String): String {
+        if (key.isBlank()) return decodeBase64ToUtf8(value)
+        val bytes = Base64.decode(value, Base64.DEFAULT)
+        val keyBytes = key.toByteArray(Charsets.UTF_8)
+        val decoded = ByteArray(bytes.size) { i ->
+            (bytes[i].toInt() xor keyBytes[i % keyBytes.size].toInt()).toByte()
+        }
+        return String(decoded, Charsets.UTF_8)
+    }
+
+    private fun decodeBase64ToUtf8(value: String): String =
+        String(Base64.decode(value, Base64.DEFAULT), Charsets.UTF_8)
+
+    // ---------------------------------------------------------------------
+    // Twkan
+    // ---------------------------------------------------------------------
+
+    private fun discoverTwkan(input: String, page: Int): List<Book> {
+        val path = input.replace("{0}", page.toString())
+        return parseTwkanList(fetchHtml(TWKAN_HOST + path))
+    }
+
+    private fun searchTwkan(keyword: String): List<Book> {
+        val doc = Jsoup.connect("$TWKAN_HOST/modules/article/search.php")
+            .userAgent(UA_DESKTOP)
+            .timeout(TIMEOUT_S.toInt() * 1000)
+            .data("searchkey", keyword.trim())
+            .data("searchtype", "all")
+            .post()
+        ensureReadable(doc.html(), "$TWKAN_HOST/modules/article/search.php")
+        return if (doc.select("div.booknav2 > h1 > a").isNotEmpty()) {
+            val link = doc.selectFirst("div.booknav2 > h1 > a")?.absHref("href").orEmpty()
+            listOf(
                 Book(
-                    id          = UUID.nameUUIDFromBytes(fullLink.toByteArray()).toString(),
-                    title       = name,
-                    author      = "",
-                    description = description,
-                    coverUrl    = cover,
-                    source      = "crawl",
-                    sourceUrl   = fullLink
+                    id = uuidFrom(link),
+                    title = doc.selectFirst("div.booknav2 > h1 > a")?.text()?.trim().orEmpty(),
+                    author = doc.selectFirst("div.booknav2 > p:nth-child(2) > a")?.text()?.trim().orEmpty(),
+                    coverUrl = doc.selectFirst("div.bookimg2 img")?.absHref("src").orEmpty(),
+                    source = "crawl:${NovelSource.TWKAN.label}",
+                    sourceUrl = link.ifBlank { TWKAN_HOST }
                 )
             )
-        }
-        return books
-    }
-
-    /** Chi tiết truyện qua STV proxy — giống getDetailStv() */
-    private fun fetchDetailSTV(url: String): Pair<Book, List<Chapter>> {
-        val doc = fetchHtml(url)
-
-        val title = doc.selectFirst("#oriname")?.text()?.trim() ?: ""
-        val author = doc.selectFirst("i.cap")?.attr("onclick")
-            ?.replace(Regex("""location='\/\?find=&findinname=(.*?)'"""), "$1")
-            ?.trim() ?: "Không rõ"
-        val description = doc.selectFirst(".blk:has(.fa-water) .blk-body")?.html() ?: ""
-        val cover = doc.selectFirst("meta[property=\"og:image\"]")?.attr("content")
-            ?.replace("/cdn/images/nc.jpg", "https://static.sangtacvietcdn.xyz/img/bookcover256.jpg")
-            ?: ""
-
-        val bookId = UUID.nameUUIDFromBytes(url.toByteArray()).toString()
-
-        // Xác định nguồn để lấy TOC đúng
-        val chapters = when {
-            url.contains("qidian") -> {
-                val id = extractSTVBookId(url)
-                fetchTocQidianById(id, bookId)
-            }
-            url.contains("69shu") -> {
-                val id = extractSTVBookId(url)
-                fetchToc69shuById(id, bookId)
-            }
-            url.contains("ptwxz") -> {
-                val id = extractSTVBookId(url)
-                fetchTocPtwxzById(id, bookId)
-            }
-            url.contains("fanqie") -> {
-                val id = extractSTVBookId(url)
-                fetchTocFanqieById(id, url, bookId)
-            }
-            url.contains("qimao") -> {
-                val id = extractSTVBookId(url)
-                fetchTocQimaoById(id, bookId)
-            }
-            else -> fetchTocFromSTVPage(url, bookId)
-        }
-
-        val book = Book(
-            id            = bookId,
-            title         = title,
-            author        = author,
-            description   = description,
-            coverUrl      = cover,
-            source        = "crawl",
-            sourceUrl     = url,
-            totalChapters = chapters.size
-        )
-        return book to chapters
-    }
-
-    /** Lấy bookId từ URL kiểu /truyen/qidian/1/12345/ */
-    private fun extractSTVBookId(url: String): String {
-        return Regex("""/1/(\d+)/?""").find(url)?.groupValues?.get(1) ?: ""
-    }
-
-    /** TOC từ trang chi tiết STV (không phân biệt nguồn — fallback) */
-    private fun fetchTocFromSTVPage(url: String, bookId: String): List<Chapter> {
-        val doc = fetchHtml(url)
-        val links = doc.select("a[href*='/chuong-']")
-        return links.mapIndexed { i, el ->
-            val href = el.attr("abs:href")
-            Chapter(
-                id           = UUID.nameUUIDFromBytes(href.toByteArray()).toString(),
-                bookId       = bookId,
-                title        = el.text().trim(),
-                chapterIndex = i,
-                sourceUrl    = href,
-                isLoaded     = false
-            )
-        }
-    }
-
-    /** Nội dung chương qua STV (fallback) */
-    private fun fetchChapSTV(url: String): String {
-        val doc = fetchHtml(url)
-        val content = doc.selectFirst("#bookContent, .chapter-content, #content")
-        return content?.text()?.trim() ?: ""
-    }
-
-    // ==========================================================
-    // PRIVATE — Qidian (1qidian.js)
-    // ==========================================================
-
-    private fun fetchDetailQidian(url: String): Pair<Book, List<Chapter>> {
-        // Chuẩn hóa URL về STV proxy (giống detail.js)
-        val bookIdRaw = url.filter { it.isDigit() }.take(10)
-        val stvUrl = "$STV_HOST/truyen/qidian/1/$bookIdRaw/"
-        return fetchDetailSTV(stvUrl)
-    }
-
-    private fun fetchTocQidianById(bookId: String, localBookId: String): List<Chapter> {
-        if (bookId.isBlank()) return emptyList()
-        return try {
-            // m.qidian.com/book/{id}/catalog/ — giống getTocQidian()
-            val url = "https://m.qidian.com/book/$bookId/catalog/"
-            val doc = fetchHtml(url, userAgent = UA_ANDROID)
-            val scriptJson = doc.selectFirst("#vite-plugin-ssr_pageContext")?.html()
-                ?.replace(Regex("</?script(.*?)\"?>"), "") ?: return emptyList()
-            val json = org.json.JSONObject(scriptJson)
-            val vs = json.getJSONObject("pageContext")
-                .getJSONObject("pageProps")
-                .getJSONObject("pageData")
-                .getJSONArray("vs")
-
-            val chapters = mutableListOf<Chapter>()
-            var index = 0
-            for (v in 0 until vs.length()) {
-                val cs = vs.getJSONObject(v).getJSONArray("cs")
-                for (c in 0 until cs.length()) {
-                    val chap = cs.getJSONObject(c)
-                    val chapId = chap.getString("id")
-                    val chapUrl = "https://m.qidian.com/chapter/$bookId/$chapId/"
-                    chapters.add(
-                        Chapter(
-                            id           = UUID.nameUUIDFromBytes(chapUrl.toByteArray()).toString(),
-                            bookId       = localBookId,
-                            title        = chap.getString("cN"),
-                            chapterIndex = index++,
-                            sourceUrl    = chapUrl,
-                            isLoaded     = false
-                        )
-                    )
-                }
-            }
-            chapters
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchTocQidianById failed: ${e.message}", e)
-            emptyList()
-        }
-    }
-
-    /** Nội dung chương Qidian mobile — giống getChapQidian() */
-    private fun fetchChapQidian(url: String): String {
-        val doc = fetchHtml(url, userAgent = UA_ANDROID)
-        val content = doc.selectFirst(".content") ?: return ""
-        return content.html()
-            .replace(Regex("<br\\s*/?>|\\n"), "\n\n")
-            .trim()
-    }
-
-    // ==========================================================
-    // PRIVATE — 69shu / 69shuba (169shu.js)
-    // ==========================================================
-
-    private fun fetchDetail69shu(url: String): Pair<Book, List<Chapter>> {
-        // Thử parse book ID từ URL trực tiếp
-        val idMatch = Regex("""/book/(\d+)/?|/(\d+)\.htm""").find(url)
-        val bookId69 = idMatch?.groupValues?.firstOrNull { it.isNotBlank() && it != idMatch.value }
-            ?: url.filter { it.isDigit() }
-
-        // Lấy thông tin từ 69shuba.com (giống getDetail69shu)
-        val detailUrl = "$HOST_69/book/$bookId69/"
-        val doc = fetchGbk(detailUrl)
-
-        val title = doc.selectFirst("div.booknav2 > h1 > a")?.text()?.trim() ?: ""
-        val author = doc.selectFirst("div.booknav2 > p:nth-child(3) a")?.text()?.trim() ?: "Không rõ"
-        val cover = "https://static.69shuba.com/files/article/image/${bookId69.toLongOrNull()?.div(1000) ?: 0}/$bookId69/${bookId69}s.jpg"
-        val description = doc.selectFirst("#jianjie-popup > div > div.content p")?.html() ?: ""
-        val localBookId = UUID.nameUUIDFromBytes(url.toByteArray()).toString()
-
-        val chapters = fetchToc69shuById(bookId69, localBookId)
-        val book = Book(
-            id            = localBookId,
-            title         = title,
-            author        = author,
-            description   = description,
-            coverUrl      = cover,
-            source        = "crawl",
-            sourceUrl     = url,
-            totalChapters = chapters.size
-        )
-        return book to chapters
-    }
-
-    private fun fetchToc69shuById(bookId: String, localBookId: String): List<Chapter> {
-        if (bookId.isBlank()) return emptyList()
-        return try {
-            val url = "$HOST_69/book/$bookId/"
-            val doc = fetchGbk(url)
-            val links = doc.select("div.catalog > ul > li > a:not(#bookcase)")
-            links.reversed().mapIndexed { i, el ->
-                val href = el.attr("href").let {
-                    if (it.startsWith("http")) it else "$HOST_69/${it.trimStart('/')}"
-                }
-                Chapter(
-                    id           = UUID.nameUUIDFromBytes(href.toByteArray()).toString(),
-                    bookId       = localBookId,
-                    title        = el.text().trim().cleanChapterName(),
-                    chapterIndex = i,
-                    sourceUrl    = href,
-                    isLoaded     = false
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchToc69shuById failed: ${e.message}", e)
-            emptyList()
-        }
-    }
-
-    /** Nội dung chương 69shu — giống getChap69shu() (dùng fetch thông thường thay browser) */
-    private fun fetchChap69shu(url: String): String {
-        val doc = fetchGbk(url)
-        val content = doc.selectFirst("div.txtnav") ?: return ""
-        content.select("h1, div").remove()
-        return content.html()
-            .replace(Regex("""^ *第\d+章.*?<br>"""), "")
-            .replace("(本章完)", "")
-            .replace(Regex("""无错版本在.*?吧首发本小说。""", RegexOption.MULTILINE), "")
-            .replace(Regex("""本作品由六九.*?理上传~~""", RegexOption.MULTILINE), "")
-            .replace(Regex("<br\\s*/?>|\\n"), "\n\n")
-            .trim()
-    }
-
-    // ==========================================================
-    // PRIVATE — Ptwxz / Piaotia (1ptwxz.js)
-    // ==========================================================
-
-    private fun fetchDetailPtwxz(url: String): Pair<Book, List<Chapter>> {
-        val doc = fetchGb2312(url)
-        val title = doc.selectFirst("#content h1")?.text()?.trim() ?: ""
-        val author = doc.select("#content table table td")
-            .firstOrNull { Regex("作.*者：").containsMatchIn(it.text()) }
-            ?.text()?.replace(Regex("作.*者："), "")?.trim() ?: "Không rõ"
-        val cover = doc.selectFirst("#content table table a > img[align][hspace][vspace]")
-            ?.attr("src") ?: ""
-        val description = doc.selectFirst(
-            "#content table table div[style]:not([id]):not([onclick])"
-        )?.also { it.select("span, a").remove() }?.html() ?: ""
-
-        val localBookId = UUID.nameUUIDFromBytes(url.toByteArray()).toString()
-        val chapters = fetchTocPtwxzFromDetailUrl(url, localBookId)
-        val book = Book(
-            id            = localBookId,
-            title         = title,
-            author        = author,
-            description   = description,
-            coverUrl      = cover,
-            source        = "crawl",
-            sourceUrl     = url,
-            totalChapters = chapters.size
-        )
-        return book to chapters
-    }
-
-    private fun fetchTocPtwxzById(id: String, localBookId: String): List<Chapter> {
-        if (id.isBlank()) return emptyList()
-        return try {
-            val prefix = id.toLongOrNull()?.div(1000) ?: return emptyList()
-            val url = "$HOST_PTWXZ/html/$prefix/$id/"
-            fetchTocPtwxzFromUrl(url, localBookId)
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchTocPtwxzById failed: ${e.message}", e)
-            emptyList()
-        }
-    }
-
-    private fun fetchTocPtwxzFromDetailUrl(detailUrl: String, localBookId: String): List<Chapter> {
-        // bookinfo/{a}/{b}.html → /html/{a}/{b}/
-        val tocUrl = detailUrl.replace(
-            Regex("""bookinfo/(\d+)/(\d+)\.html$"""),
-            "html/$1/$2/"
-        ).let { if (it.endsWith("/")) it else "$it/" }
-        return fetchTocPtwxzFromUrl(tocUrl, localBookId)
-    }
-
-    private fun fetchTocPtwxzFromUrl(url: String, localBookId: String): List<Chapter> {
-        val doc = fetchGb2312(url)
-        return doc.select("div.centent li > a").mapIndexed { i, el ->
-            val href = el.attr("href").let {
-                if (it.startsWith("http")) it
-                else "$HOST_PTWXZ/${it.trimStart('/')}"
-            }
-            Chapter(
-                id           = UUID.nameUUIDFromBytes(href.toByteArray()).toString(),
-                bookId       = localBookId,
-                title        = el.text().trim(),
-                chapterIndex = i,
-                sourceUrl    = href,
-                isLoaded     = false
-            )
-        }
-    }
-
-    /** Nội dung chương Ptwxz — giống getChapPtwxz() */
-    private fun fetchChapPtwxz(url: String): String {
-        val doc = fetchGb2312(url)
-        doc.select("h1, div, table, script, center").remove()
-        val htm = doc.body().html()
-        return htm.replace(Regex("<br\\s*/?>|\\n"), "\n\n").trim()
-    }
-
-    // ==========================================================
-    // PRIVATE — Fanqie (1fanqie.js — phiên bản public không cần auth)
-    // ==========================================================
-
-    private fun fetchChapFanqie(url: String): String {
-        // Extract chapterId từ URL kiểu /bookId/chapId/
-        val chapId = Regex("""/(\d+)/(\d+)/?$""").find(url)?.groupValues?.get(2) ?: ""
-        if (chapId.isBlank()) return ""
-
-        // Thử các endpoint public (không yêu cầu đăng nhập)
-        val endpoints = listOf(
-            "https://api.langge.cf/content?item_id=$chapId&source=番茄&tab=小说&tone_id=默认音色&version=4.6.29",
-            "https://api.doubi.tk/content?item_id=$chapId&source=番茄&tab=小说&tone_id=默认音色&version=4.6.29"
-        )
-        for (endpoint in endpoints) {
-            try {
-                val body = rawGet(endpoint)
-                val json = org.json.JSONObject(body)
-                val content = json.optString("content", "").trim()
-                if (content.isNotBlank()) {
-                    return content
-                        .replace(Regex("""本书源属于.*?企鹅：\d+）"""), "")
-                        .replace(Regex("""[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]"""), "")
-                        .replace(Regex("<br\\s*/?>|\\n"), "\n\n")
-                        .trim()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "fanqie endpoint failed: $endpoint — ${e.message}")
-            }
-        }
-        return "Không thể tải nội dung chương này."
-    }
-
-    private fun fetchTocFanqieById(bookId: String, stvUrl: String, localBookId: String): List<Chapter> {
-        if (bookId.isBlank()) return emptyList()
-        return try {
-            val body = rawGet("https://fanqienovel.com/api/reader/directory/detail?bookId=$bookId")
-            val root = org.json.JSONObject(body)
-            val volumes = root.getJSONObject("data").getJSONArray("chapterListWithVolume")
-            val chapters = mutableListOf<Chapter>()
-            var index = 0
-            for (volumeIndex in 0 until volumes.length()) {
-                val volume = volumes.getJSONArray(volumeIndex)
-                for (chapterIndex in 0 until volume.length()) {
-                    val item = volume.getJSONObject(chapterIndex)
-                    val itemId = item.optString("itemId")
-                    if (itemId.isBlank()) continue
-                    chapters.add(
-                        Chapter(
-                            id = UUID.nameUUIDFromBytes("$stvUrl$itemId".toByteArray()).toString(),
-                            bookId = localBookId,
-                            title = item.optString("title", "Chương ${index + 1}"),
-                            chapterIndex = index++,
-                            sourceUrl = "${stvUrl.trimEnd('/')}/$itemId/",
-                            isLoaded = false
-                        )
-                    )
-                }
-            }
-            chapters
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchTocFanqieById failed: ${e.message}", e)
-            emptyList()
-        }
-    }
-
-    // ==========================================================
-    // PRIVATE — Qimao (1qimao.js)
-    // ==========================================================
-
-    private fun fetchDetailQimao(url: String): Pair<Book, List<Chapter>> {
-        val stvUrl = if (url.contains("sangtac") || url.contains("14.225.254.182")) {
-            normalizeStvUrl(url)
         } else {
-            val id = url.filter { it.isDigit() }
-            "$STV_HOST/truyen/qimao/1/$id/"
+            parseTwkanList(doc)
         }
-        return fetchDetailSTV(stvUrl)
     }
 
-    private fun fetchTocQimaoById(bookId: String, localBookId: String): List<Chapter> {
-        if (bookId.isBlank()) return emptyList()
-        return try {
-            val sign = md5Hex("id=$bookId$QIMAO_SECRET")
-            val body = rawGet(
-                url = "https://api-ks.wtzw.com/api/v1/chapter/chapter-list?id=$bookId&sign=$sign",
-                headers = qimaoHeaders()
+    private fun parseTwkanList(doc: Document): List<Book> =
+        doc.select("#article_list_content li, .newbox li").mapNotNull { item ->
+            val a = item.selectFirst(".newnav h3 > a:not([class]), h3 > a") ?: return@mapNotNull null
+            val link = a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(TWKAN_HOST) }
+            val title = a.text().trim()
+            if (title.isBlank()) return@mapNotNull null
+            Book(
+                id = uuidFrom(link),
+                title = title,
+                author = "",
+                description = item.selectFirst(".zxzj > p")?.text()?.trim().orEmpty(),
+                coverUrl = item.selectFirst(".imgbox > img")?.attr("data-src")?.toAbsoluteUrl(TWKAN_HOST).orEmpty(),
+                source = "crawl:${NovelSource.TWKAN.label}",
+                sourceUrl = link
             )
-            val root = org.json.JSONObject(body)
-            val list = root.getJSONObject("data").getJSONArray("chapter_lists")
-            val chapters = mutableListOf<Chapter>()
-            for (i in 0 until list.length()) {
-                val chapter = list.getJSONObject(i)
-                val chapterId = chapter.optString("id")
-                if (chapterId.isBlank()) continue
-                val apiPath = "chapterId=$chapterId&id=$bookId"
+        }
+
+    private fun fetchDetailTwkan(detailUrl: String): Pair<Book, List<Chapter>> {
+        val url = normalizeHost(detailUrl, TWKAN_HOST).replace("/txt/", "/book/")
+        val doc = fetchHtml(url)
+        val bookId = uuidFrom(url)
+        val remoteId = Regex("""/(\d+)\.html""").find(url)?.groupValues?.get(1).orEmpty()
+        val chapters = if (remoteId.isBlank()) emptyList() else {
+            fetchHtml("$TWKAN_HOST/ajax_novels/chapterlist/$remoteId.html")
+                .select("ul > li > a")
+                .mapIndexed { index, a ->
+                    chapterStub(bookId, a.text().trim(), a.attr("href").toAbsoluteUrl(TWKAN_HOST), index)
+                }
+        }
+        val book = Book(
+            id = bookId,
+            title = doc.selectFirst("div.booknav2 > h1 > a")?.text()?.trim().orEmpty(),
+            author = doc.selectFirst("div.booknav2 > p:nth-child(2) > a")?.text()?.trim().orEmpty(),
+            description = doc.selectFirst("div.navtxt > p")?.html()?.let(::htmlToReaderText).orEmpty(),
+            coverUrl = doc.selectFirst("div.bookimg2 > img")?.absHref("src").orEmpty(),
+            source = "crawl:${NovelSource.TWKAN.label}",
+            sourceUrl = url,
+            totalChapters = chapters.size
+        )
+        return book to chapters
+    }
+
+    private fun fetchChapTwkan(chapterUrl: String): String {
+        val doc = fetchHtml(normalizeHost(chapterUrl, TWKAN_HOST))
+        val content = doc.selectFirst("#txtcontent0") ?: return ""
+        content.select("h1, div, script, style").remove()
+        return htmlToReaderText(content.html())
+    }
+
+    // ---------------------------------------------------------------------
+    // 69hsz / 69hsw
+    // ---------------------------------------------------------------------
+
+    private fun discover69hsz(input: String, page: Int): List<Book> {
+        val url = when {
+            input.contains("{0}") -> input.replace("{0}", page.toString())
+            page <= 1 -> input
+            else -> "$HSZ69_HOST/class/1_$page.html"
+        }
+        return parse69hszList(fetchHtml(normalize69hszUrl(url)))
+    }
+
+    private fun search69hsz(keyword: String): List<Book> {
+        val encoded = URLEncoder.encode(keyword.trim(), "UTF-8")
+        val doc = fetchHtml("$HSZ69_HOST/ss/?searchkey=$encoded")
+        if (doc.select(".modal-code, input[name=verifycode]").isNotEmpty()) {
+            throw IOException("69hsz yeu cau captcha khi tim kiem. Hay chon tu danh sach hoac mo URL chi tiet.")
+        }
+        return parse69hszList(doc)
+    }
+
+    private fun parse69hszList(doc: Document): List<Book> {
+        val books = linkedMapOf<String, Book>()
+
+        fun addBook(link: String, title: String, author: String, description: String, coverUrl: String) {
+            val normalized = normalize69hszUrl(link)
+            if (!is69hszBookUrl(normalized) || title.isBlank() || books.containsKey(normalized)) return
+            books[normalized] = Book(
+                id = uuidFrom(normalized),
+                title = title,
+                author = author,
+                description = description,
+                coverUrl = coverUrl,
+                source = "crawl:${NovelSource.HSZ_69.label}",
+                sourceUrl = normalized
+            )
+        }
+
+        doc.select("#hotcontent .item, .l.rank .item").forEach { item ->
+            val a = item.selectFirst("dt a") ?: return@forEach
+            val cover = item.selectFirst(".image img")
+                ?.let { it.attr("data-original").ifBlank { it.attr("src") } }
+                ?.toAbsoluteUrl(HSZ69_HOST).orEmpty()
+            addBook(
+                link = a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(HSZ69_HOST) },
+                title = a.text().trim(),
+                author = item.selectFirst(".btm a")?.text()?.trim()
+                    ?: item.selectFirst(".btm")?.ownText()?.trim().orEmpty(),
+                description = item.selectFirst("dd")?.text()?.trim().orEmpty(),
+                coverUrl = cover
+            )
+        }
+
+        doc.select("#newscontent li, .novelslist li").forEach { item ->
+            val a = item.selectFirst(".s2 a, > a") ?: return@forEach
+            addBook(
+                link = a.absHref("href").ifBlank { a.attr("href").toAbsoluteUrl(HSZ69_HOST) },
+                title = a.text().trim(),
+                author = item.selectFirst(".s5, i")?.text()?.trim().orEmpty(),
+                description = item.selectFirst(".s3")?.text()?.trim().orEmpty(),
+                coverUrl = ""
+            )
+        }
+
+        return books.values.toList()
+    }
+
+    private fun fetchDetail69hsz(detailUrl: String): Pair<Book, List<Chapter>> {
+        val url = normalize69hszUrl(detailUrl)
+        val doc = fetchHtml(url)
+        val bookId = uuidFrom(url)
+        val chapters = parse69hszToc(doc, bookId)
+        val cover = doc.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.isNotBlank() }
+            ?: doc.selectFirst("#fmimg img")
+                ?.let { it.attr("data-original").ifBlank { it.attr("src") } }
+                ?.toAbsoluteUrl(HSZ69_HOST).orEmpty()
+        val book = Book(
+            id = bookId,
+            title = doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+                ?: doc.selectFirst("#info h1, h1")?.text()?.trim().orEmpty(),
+            author = parse69hszAuthor(doc),
+            description = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+                ?: doc.selectFirst("#intro")?.html()?.let(::htmlToReaderText).orEmpty(),
+            coverUrl = cover,
+            source = "crawl:${NovelSource.HSZ_69.label}",
+            sourceUrl = url,
+            totalChapters = chapters.size
+        )
+        return book to chapters
+    }
+
+    private fun parse69hszToc(doc: Document, bookId: String): List<Chapter> {
+        val chapters = mutableListOf<Chapter>()
+        val dl = doc.selectFirst("#list dl")
+        if (dl != null) {
+            var inFullToc = false
+            var titleSectionCount = 0
+            dl.children().forEach { child ->
+                when {
+                    child.tagName().equals("dt", ignoreCase = true) -> {
+                        titleSectionCount += 1
+                        inFullToc = titleSectionCount >= 2
+                    }
+                    inFullToc && child.tagName().equals("a", ignoreCase = true) -> {
+                        val href = child.attr("href").toAbsoluteUrl(HSZ69_HOST)
+                        val title = child.selectFirst("dd")?.text()?.trim().orEmpty()
+                        chapters.add(chapterStub(bookId, cleanChineseChapterName(title), href, chapters.size))
+                    }
+                }
+            }
+        }
+
+        if (chapters.isEmpty()) {
+            doc.select("#list a[rel=chapter]").forEach { a ->
+                val title = a.selectFirst("dd")?.text()?.trim().orEmpty().ifBlank { a.text().trim() }
                 chapters.add(
-                    Chapter(
-                        id = UUID.nameUUIDFromBytes(apiPath.toByteArray()).toString(),
-                        bookId = localBookId,
-                        title = chapter.optString("title", "Chương ${i + 1}"),
-                        chapterIndex = i,
-                        sourceUrl = "https://api-bc.wtzw.com/$apiPath",
-                        isLoaded = false
+                    chapterStub(
+                        bookId,
+                        cleanChineseChapterName(title),
+                        a.attr("href").toAbsoluteUrl(HSZ69_HOST),
+                        chapters.size
                     )
                 )
             }
-            chapters
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchTocQimaoById failed: ${e.message}", e)
-            emptyList()
+        }
+
+        return chapters.distinctBy { it.sourceUrl }.mapIndexed { index, chapter ->
+            chapter.copy(chapterIndex = index)
         }
     }
 
-    private fun fetchChapQimao(url: String): String {
-        val query = url
-            .removePrefix("https://api-bc.wtzw.com/")
-            .removePrefix("?")
-            .ifBlank { return "" }
-        val sign = md5Hex("${query.replaceFirst("&", "")}$QIMAO_SECRET")
-        val body = rawGet(
-            url = "https://api-ks.wtzw.com/api/v1/chapter/content?$query&sign=$sign",
-            headers = qimaoHeaders()
-        )
-        val contentBase64 = org.json.JSONObject(body)
-            .getJSONObject("data")
-            .getString("content")
-        val encryptedHex = Base64.decode(contentBase64, Base64.DEFAULT).toHex()
-        if (encryptedHex.length <= 32) return ""
-        val iv = encryptedHex.take(32).hexToBytes()
-        val cipherText = encryptedHex.drop(32).hexToBytes()
-        val key = "32343263636238323330643730396531".hexToBytes()
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        return String(cipher.doFinal(cipherText), Charsets.UTF_8)
-            .replace(Regex("<br\\s*/?>|\\n"), "\n\n")
-            .trim()
+    private fun fetchChap69hsz(chapterUrl: String): String {
+        val chunks = mutableListOf<String>()
+        val visited = mutableSetOf<String>()
+        var nextPage = normalize69hszUrl(chapterUrl)
+
+        while (nextPage.isNotBlank() && visited.add(nextPage) && visited.size <= 8) {
+            val doc = fetchHtml(nextPage)
+            val content = doc.selectFirst("#booktxt, #content") ?: break
+            content.select("script, style, iframe, .readtj, .bottem1, .bottem2").remove()
+            val text = htmlToReaderText(content.html())
+                .replace("\u672c\u7ae0\u672a\u5b8c\uff0c\u70b9\u51fb\u4e0b\u4e00\u9875\u7ee7\u7eed\u9605\u8bfb\u3002", "")
+                .trim()
+            if (text.isNotBlank()) chunks.add(text)
+
+            val nextLink = doc.selectFirst("#next_url, a[rel=next]")
+            val isNextPage = nextLink?.text()?.contains("\u4e0b\u4e00\u9875") == true
+            nextPage = if (isNextPage) {
+                nextLink.attr("href").toAbsoluteUrl(HSZ69_HOST)
+            } else {
+                ""
+            }
+        }
+
+        return chunks.joinToString("\n\n")
     }
 
-    // ==========================================================
-    // HTTP HELPERS
-    // ==========================================================
+    // ---------------------------------------------------------------------
+    // TRXS
+    // ---------------------------------------------------------------------
 
-    private val UA_ANDROID =
-        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    private fun discoverTrxs(page: Int): List<Book> {
+        val path = if (page <= 1) "/tongren/index.html" else "/tongren/index_$page.html"
+        return parseTrxsList(fetchGb2312(TRXS_HOST + path))
+    }
+
+    private fun searchTrxs(keyword: String, page: Int): List<Book> =
+        discoverTrxs(page).filter { it.title.contains(keyword.trim(), ignoreCase = true) }
+
+    private fun parseTrxsList(doc: Document): List<Book> =
+        doc.select("div.bk > a").mapNotNull { a ->
+            val title = a.selectFirst("div.infos > h3")?.text()?.trim().orEmpty()
+            val link = a.attr("href").toAbsoluteUrl(TRXS_HOST)
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+            Book(
+                id = uuidFrom(link),
+                title = title,
+                author = "",
+                description = "",
+                coverUrl = a.selectFirst("div.pic > img")?.attr("src")?.toAbsoluteUrl(TRXS_HOST).orEmpty(),
+                source = "crawl:${NovelSource.TRXS.label}",
+                sourceUrl = link
+            )
+        }
+
+    private fun fetchDetailTrxs(detailUrl: String): Pair<Book, List<Chapter>> {
+        val url = normalizeHost(detailUrl, TRXS_HOST)
+            .replace("m.trxs.cc", "trxs.cc")
+            .replace("www.trxs.cc", "trxs.cc")
+        val doc = fetchGb2312(url)
+        val bookId = uuidFrom(url)
+        val chapters = doc.select("div.book_list.clearfix > ul > li a").mapIndexed { index, a ->
+            chapterStub(bookId, a.text().trim(), a.attr("href").toAbsoluteUrl(TRXS_HOST), index)
+        }
+        val book = Book(
+            id = bookId,
+            title = doc.selectFirst("div.infos > h1")?.text()?.trim().orEmpty(),
+            author = doc.selectFirst("div.book_info.clearfix div.infos div.date span a")?.text()?.trim().orEmpty(),
+            description = doc.selectFirst("div.booktips + p")?.text()?.trim().orEmpty(),
+            coverUrl = doc.selectFirst("div.book_info.clearfix div.pic img")?.attr("src")?.toAbsoluteUrl(TRXS_HOST).orEmpty(),
+            source = "crawl:${NovelSource.TRXS.label}",
+            sourceUrl = url,
+            totalChapters = chapters.size
+        )
+        return book to chapters
+    }
+
+    private fun fetchChapTrxs(chapterUrl: String): String {
+        val doc = fetchGb2312(normalizeHost(chapterUrl, TRXS_HOST))
+        return htmlToReaderText(doc.selectFirst("div.read_chapterDetail")?.html().orEmpty())
+    }
+
+    // ---------------------------------------------------------------------
+    // HTTP and parsing helpers
+    // ---------------------------------------------------------------------
 
     private val UA_DESKTOP =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    private fun fetchHtml(url: String, userAgent: String = UA_DESKTOP): Document {
-        return try {
-            if (url.contains("sangtacviet.app")) {
-                fetchHtmlViaOkHttp(url)
-            } else {
-                Jsoup.connect(url)
-                    .userAgent(userAgent)
-                    .timeout(TIMEOUT_S.toInt() * 1000)
-                    .followRedirects(true)
-                    .get()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchHtml failed cho $url: ${e.message}")
-            throw e
-        }
+    private fun fetchHtml(url: String): Document {
+        val html = rawGet(url)
+        return Jsoup.parse(html, url)
     }
 
+    private fun fetchGbk(url: String): Document {
+        val bytes = rawGetBytes(url)
+        val html = String(bytes, charset("GBK"))
+        ensureReadable(html, url)
+        return Jsoup.parse(html, url)
+    }
 
-    /** Lấy trang mã GBK (69shu) */
-    private fun fetchGbk(url: String): Document =
-        Jsoup.connect(url)
-            .userAgent(UA_DESKTOP)
-            .timeout(TIMEOUT_S.toInt() * 1000)
-            .followRedirects(true)
-            .ignoreHttpErrors(true)
-            .parser(org.jsoup.parser.Parser.htmlParser())
-            .get().also { it.outputSettings().charset(Charsets.UTF_8) }
-            .let {
-                // Jsoup không tự detect GBK — phải fetch raw rồi decode
-                val bytes = rawGetBytes(url)
-                Jsoup.parse(bytes.inputStream(), "GBK", url)
-            }
-
-    /** Lấy trang mã GB2312 (Ptwxz) */
     private fun fetchGb2312(url: String): Document {
         val bytes = rawGetBytes(url)
-        return Jsoup.parse(bytes.inputStream(), "GB2312", url)
+        val html = String(bytes, charset("GB2312"))
+        ensureReadable(html, url)
+        return Jsoup.parse(html, url)
     }
 
-    private fun rawGet(url: String, headers: Map<String, String> = emptyMap()): String {
-        val builder = Request.Builder().url(url).header("User-Agent", UA_DESKTOP)
-        headers.forEach { (key, value) -> builder.header(key, value) }
-        val req = builder.build()
-        return client.newCall(req).execute().use { it.body?.string() ?: "" }
+    private fun rawGet(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA_DESKTOP)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,zh-CN;q=0.6")
+            .build()
+        return client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code} khi tai $url")
+            val body = response.body?.string().orEmpty()
+            ensureReadable(body, url)
+            body
+        }
     }
 
     private fun rawGetBytes(url: String): ByteArray {
-        val req = Request.Builder().url(url).header("User-Agent", UA_DESKTOP).build()
-        return client.newCall(req).execute().use { it.body?.bytes() ?: ByteArray(0) }
-    }
-
-    // Helpers extension
-    private fun String.capitalizeWords(): String =
-        split(" ").joinToString(" ") { w ->
-            if (w.isEmpty()) w else w[0].uppercaseChar() + w.substring(1)
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA_DESKTOP)
+            .build()
+        return client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code} khi tai $url")
+            response.body?.bytes() ?: ByteArray(0)
         }
-
-    private fun String.cleanChapterName(): String {
-        // "1.第23章 ..." → "第23章 ..."
-        return replace(Regex("""^\d+\.第(\d+)章"""), "第$1章")
     }
 
-    private fun qimaoHeaders(): Map<String, String> {
-        val signSource =
-            "app-version=${QIMAO_APP_VERSION}application-id=${QIMAO_APPLICATION_ID}platform=android$QIMAO_SECRET"
-        return mapOf(
-            "platform" to "android",
-            "app-version" to QIMAO_APP_VERSION,
-            "application-id" to QIMAO_APPLICATION_ID,
-            "sign" to md5Hex(signSource),
-            "user-agent" to "webviewversion/0"
+    private fun ensureReadable(html: String, url: String) {
+        val lower = html.lowercase()
+        if (
+            lower.contains("just a moment") ||
+            lower.contains("cf-chl") ||
+            lower.contains("cloudflare") && lower.contains("challenge")
+        ) {
+            throw IOException("Nguon dang bi Cloudflare chan tu dong: $url")
+        }
+    }
+
+    private fun chapterStub(bookId: String, title: String, url: String, index: Int): Chapter =
+        Chapter(
+            id = uuidFrom(url),
+            bookId = bookId,
+            title = title.ifBlank { "Chuong ${index + 1}" },
+            chapterIndex = index,
+            sourceUrl = url,
+            isLoaded = false
         )
+
+    private fun uuidFrom(value: String): String =
+        UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)).toString()
+
+    private fun htmlToReaderText(html: String): String {
+        val withBreaks = html
+            .replace(Regex("(?i)<br\\s*/?>"), "\n")
+            .replace(Regex("(?i)</p>"), "\n\n")
+            .replace(Regex("(?i)</div>"), "\n\n")
+            .replace("&nbsp;", " ")
+        return Jsoup.parseBodyFragment(withBreaks)
+            .body()
+            .wholeText()
+            .replace('\u00a0', ' ')
+            .replace(Regex("[ \\t]+"), " ")
+            .replace(Regex("\\n[ \\t]+"), "\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
     }
 
-    private fun md5Hex(value: String): String =
-        MessageDigest.getInstance("MD5")
-            .digest(value.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    private fun parse69hszAuthor(doc: Document): String {
+        val metaAuthor = doc.selectFirst("meta[property=og:novel:author]")?.attr("content")?.trim()
+        if (!metaAuthor.isNullOrBlank()) return metaAuthor
+        return doc.select("#info p").firstOrNull { it.text().contains("\u4f5c\u8005") }
+            ?.text()
+            ?.replace(Regex("""^.*[:\uff1a]\s*"""), "")
+            ?.trim()
+            .orEmpty()
+    }
 
-    private fun ByteArray.toHex(): String =
-        joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    private fun normalize69hszUrl(url: String): String {
+        val absolute = url.toAbsoluteUrl(HSZ69_HOST)
+        return absolute.replace(Regex("""^https?://(?:www\.|m\.)?(?:69hsz|69hsw|69hao)\.(?:com|net)"""), HSZ69_HOST)
+    }
 
-    private fun String.hexToBytes(): ByteArray {
-        val clean = trim()
-        return ByteArray(clean.length / 2) { index ->
-            clean.substring(index * 2, index * 2 + 2).toInt(16).toByte()
+    private fun is69hszBookUrl(url: String): Boolean =
+        Regex("""^https?://[^/]+/\d+/?$""").matches(url)
+
+    private fun normalizeHost(url: String, host: String): String =
+        if (url.startsWith("http", ignoreCase = true)) {
+            url.replace(Regex("""^https?://(?:www\.)?[^/]+"""), host)
+        } else {
+            url.toAbsoluteUrl(host)
         }
-    }
-}
 
-// ============================================================
-// TXT FILE PARSER — giữ nguyên, không liên quan đến crawl
-// ============================================================
+    private fun String.toAbsoluteUrl(host: String): String = when {
+        startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true) -> this
+        startsWith("//") -> "https:$this"
+        startsWith("/") -> host.trimEnd('/') + this
+        isBlank() -> ""
+        else -> host.trimEnd('/') + "/" + this
+    }
+
+    private fun Element.absHref(attr: String): String = absUrl(attr)
+
+    private fun String.hostRoot(): String =
+        Regex("""^(https?://[^/]+)""").find(this)?.groupValues?.get(1).orEmpty()
+
+    private fun parseCssUrl(style: String): String? =
+        Regex("""url\(['"]?(.*?)['"]?\)""").find(style)?.groupValues?.get(1)
+
+    private fun extractFirstNumber(value: String): String? =
+        Regex("""(\d+)""").find(value)?.groupValues?.get(1)
+
+    private fun cleanChineseChapterName(name: String): String =
+        name.replace(Regex("""^\d+\.第(\d+)章"""), "第$1章")
+}
 
 class TxtChapterParser {
     companion object {
@@ -764,7 +829,7 @@ class TxtChapterParser {
         private const val MAX_SINGLE_CHAPTER_CHARS = 60_000
 
         val DEFAULT_CHAPTER_REGEX = Regex(
-            pattern = """^(?:Chương|CHƯƠNG|Chapter|CHAPTER|Phần|Part)\s*\d+.*$""",
+            pattern = """^(?:Chương|Chuong|CHƯƠNG|CHUONG|Chapter|CHAPTER|Phần|Phan|Part)\s*\d+.*$""",
             options = setOf(RegexOption.MULTILINE)
         )
     }
@@ -773,7 +838,7 @@ class TxtChapterParser {
         val normalized = text.trimStart('\uFEFF').replace("\r\n", "\n").replace('\r', '\n')
         val lines = normalized.split("\n")
         val chapters = mutableListOf<Chapter>()
-        var currentTitle = "Giới thiệu"
+        var currentTitle = "Gioi thieu"
         val currentContent = StringBuilder()
         var chapterIndex = 0
         var firstHeadingFound = false
@@ -782,8 +847,9 @@ class TxtChapterParser {
             val trimmed = line.trim()
             if (trimmed.isNotEmpty() && regex.matches(trimmed)) {
                 if (!firstHeadingFound) {
-                    if (currentContent.isNotBlank())
+                    if (currentContent.isNotBlank()) {
                         chapters.add(build(bookId, currentTitle, currentContent.toString(), chapterIndex++))
+                    }
                     firstHeadingFound = true
                 } else {
                     chapters.add(build(bookId, currentTitle, currentContent.toString(), chapterIndex++))
@@ -794,12 +860,11 @@ class TxtChapterParser {
                 currentContent.append(line).append('\n')
             }
         }
-        if (firstHeadingFound || currentContent.isNotBlank())
+        if (firstHeadingFound || currentContent.isNotBlank()) {
             chapters.add(build(bookId, currentTitle, currentContent.toString(), chapterIndex))
-
-        if (!firstHeadingFound) {
-            return splitFallback(bookId, normalized, "Phần")
         }
+
+        if (!firstHeadingFound) return splitFallback(bookId, normalized, "Phan")
 
         if (chapters.size == 1 && chapters.first().content.length > MAX_SINGLE_CHAPTER_CHARS) {
             val only = chapters.first()
@@ -845,8 +910,11 @@ class TxtChapterParser {
     }
 
     private fun build(bookId: String, title: String, content: String, index: Int) = Chapter(
-        id = UUID.randomUUID().toString(), bookId = bookId,
-        title = title, content = content.trim(),
-        chapterIndex = index, isLoaded = true
+        id = UUID.randomUUID().toString(),
+        bookId = bookId,
+        title = title,
+        content = content.trim(),
+        chapterIndex = index,
+        isLoaded = true
     )
 }

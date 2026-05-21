@@ -21,6 +21,7 @@ import com.example.novelreader.data.repository.ReviewRepository
 import com.example.novelreader.domain.model.Review
 import kotlinx.coroutines.flow.map
 import com.example.novelreader.data.remote.crawler.DiscoverFeed
+import com.example.novelreader.data.remote.crawler.SourceGroup
 
 // ============================================================
 // BOOKSHELF VIEW MODEL
@@ -92,7 +93,10 @@ class DiscoverViewModel @Inject constructor(
     private val _novels = MutableStateFlow<List<Book>>(emptyList())
     val novels: StateFlow<List<Book>> = _novels.asStateFlow()
 
-    private val _selectedFeed = MutableStateFlow(DiscoverFeed.QIDIAN_WEEK)
+    private val _selectedGroup = MutableStateFlow(SourceGroup.VIETNAMESE)
+    val selectedGroup: StateFlow<SourceGroup> = _selectedGroup.asStateFlow()
+
+    private val _selectedFeed = MutableStateFlow(DiscoverFeed.VI_TRUYENFULL_NEW)
     val selectedFeed: StateFlow<DiscoverFeed> = _selectedFeed.asStateFlow()
 
     private val _detailState = MutableStateFlow<DetailUiState>(DetailUiState.Idle)
@@ -119,8 +123,18 @@ class DiscoverViewModel @Inject constructor(
     }
 
     fun selectFeed(feed: DiscoverFeed) {
-        if (_selectedFeed.value == feed) return
+        if (_selectedFeed.value == feed || !feed.enabled) return
+        _selectedGroup.value = feed.group
         _selectedFeed.value = feed
+        _searchQuery.value = ""
+        loadNovels()
+    }
+
+    fun selectGroup(group: SourceGroup) {
+        if (_selectedGroup.value == group) return
+        val firstFeed = DiscoverFeed.entries.firstOrNull { it.group == group && it.enabled } ?: return
+        _selectedGroup.value = group
+        _selectedFeed.value = firstFeed
         _searchQuery.value = ""
         loadNovels()
     }
@@ -183,7 +197,7 @@ class DiscoverViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _uiState.value = DiscoverUiState.Loading
-            crawler.searchNovels(query)
+            crawler.searchNovels(query, feed = _selectedFeed.value)
                 .onSuccess {
                     _novels.value = it
                     _uiState.value = DiscoverUiState.Success

@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.example.novelreader.data.remote.crawler.DiscoverFeed
+import com.example.novelreader.data.remote.crawler.SourceGroup
 import com.example.novelreader.domain.model.Book
 import com.example.novelreader.domain.model.Chapter
 import com.example.novelreader.presentation.viewmodel.DetailActionState
@@ -53,6 +54,7 @@ fun DiscoverScreen(
     val novels by viewModel.filteredNovels.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val selectedGroup by viewModel.selectedGroup.collectAsState()
     val selectedFeed by viewModel.selectedFeed.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -97,7 +99,23 @@ fun DiscoverScreen(
                 contentPadding = PaddingValues(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(DiscoverFeed.entries) { feed ->
+                items(SourceGroup.entries) { group ->
+                    FilterChip(
+                        selected = selectedGroup == group,
+                        onClick = { viewModel.selectGroup(group) },
+                        label = { Text(group.title) },
+                        leadingIcon = if (selectedGroup == group) {
+                            { Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp)) }
+                        } else null
+                    )
+                }
+            }
+
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(DiscoverFeed.entries.filter { it.group == selectedGroup && it.enabled }) { feed ->
                     FilterChip(
                         selected = selectedFeed == feed,
                         onClick = { viewModel.selectFeed(feed) },
